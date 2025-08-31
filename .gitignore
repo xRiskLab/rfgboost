@@ -166,3 +166,4 @@ Temporary Items
 .data/
 rfgboost/data/marimo/
 outputs/
+__marimo__/

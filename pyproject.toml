@@ -34,8 +34,11 @@ classifiers = [
 ]
 
 dependencies = [
+    "altair>=5.5.0",
+    "auto-mix-prep>=0.2.0",
     "fastwoe>=0.1.1.post4",
     "marimo>=0.14.12",
+    "pyarrow>=21.0.0",
     "scikit-learn<1.7.0",
     "xgboost<3.0.0",
 ]
@@ -113,6 +116,7 @@ dev = [
     "colormaps>=0.4.2",
     "ipykernel>=6.29.5",
     "matplotlib<3.10.0",
+    "nbformat>=5.10.4",
     "pyrefly",
     "pytest>=8.4.1",
     "ruff>=0.12.4",

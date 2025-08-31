@@ -1,7 +1,10 @@
-# RFGBoost
+# RFGBoost: Random Forest Gradient Boosting 🌳
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![CI](https://github.com/xRiskLab/rfgboost/workflows/CI/badge.svg)](https://github.com/xRiskLab/rfgboost/actions)
+[![Compatibility](https://github.com/xRiskLab/rfgboost/workflows/Python%20Version%20Compatibility/badge.svg)](https://github.com/xRiskLab/rfgboost/actions)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Release](https://img.shields.io/github/v/release/xRiskLab/rfgboost)](https://github.com/xRiskLab/rfgboost/releases)
 
 A powerful Python package combining **Random Forest Gradient Boosting (RFGBoost)** and **Fast Weight of Evidence (FastWoe)** encoding for interpretable machine learning with categorical features.
 
@@ -10,12 +13,30 @@ A powerful Python package combining **Random Forest Gradient Boosting (RFGBoost)
 **RFGBoost** is a gradient boosting implementation that uses Random Forest as base learners instead of traditional decision trees, providing better interpretability while maintaining strong predictive performance. The library integrates seamlessly with **FastWoe** encoding for categorical features, making it particularly valuable for financial and risk modeling applications.
 
 ### Repository Structure
-- `rfgboost/` - Core RFGBoost implementation with dual base learner support
-- `notebooks/` - Jupyter notebooks demonstrating categorical features, tuning, and uncertainty estimation
-- `tests/` - Comprehensive test suite with unit and integration tests
-- `scripts/` - Benchmarking and analysis utilities
-- `data/` - Sample datasets for experimentation
-- `marimo/` - Interactive notebook examples
+```
+rfgboost/
+├── rfgboost/                    # 📦 Core RFGBoost implementation
+│   ├── __init__.py             # Package initialization and exports
+│   └── rfgboost.py             # Main RFGBoost class with dual base learner support
+├── tests/                       # 🧪 Comprehensive test suite (54 tests)
+│   ├── unit/                   # Unit tests for core functionality
+│   ├── integration/            # Integration tests for end-to-end workflows
+│   └── compatibility/          # Python version compatibility tests
+├── notebooks/                   # 📓 Jupyter notebooks and examples
+│   ├── categorical-rfgboost.ipynb      # Categorical feature handling
+│   ├── tuning-rfgboost.ipynb          # Hyperparameter tuning guide
+│   ├── uncertainty-estimation.ipynb    # Confidence intervals demo
+│   └── rfgboost-animation.ipynb       # Visualization examples
+
+├── scripts/                     # 🔧 Utilities and CI/CD scripts
+│   └── test_compatibility.py   # Custom compatibility testing script
+├── .github/workflows/           # ⚡ Professional CI/CD pipelines
+│   ├── ci.yml                  # Main CI: tests, linting, coverage
+│   ├── compatibility.yml       # Multi-Python version testing (3.9-3.13)
+│   └── release.yml             # Automated releases and PyPI publishing
+├── data/                        # 📊 Sample datasets for experimentation
+└── pyproject.toml              # 📋 Modern Python packaging configuration
+```
 
 ### Ideal Use Cases
 - **Financial Risk Modeling**: Credit scoring and risk assessment with interpretable results
@@ -44,6 +65,13 @@ Or install from source:
 git clone https://github.com/xRiskLab/rfgboost.git
 cd rfgboost
 pip install -e .
+```
+
+### For Interactive Development (Recommended)
+```bash
+git clone https://github.com/xRiskLab/rfgboost.git
+cd rfgboost
+uv sync --dev  # Installs all dependencies including marimo
 ```
 
 ## 🏃 Quick Start
@@ -84,6 +112,24 @@ predictions = model.predict_proba(X)[:, 1]
 importance = model.get_feature_importance()
 print(importance)
 ```
+
+## 🌊 Interactive Notebooks (Marimo)
+
+**Advanced interactive notebooks** are available separately in the [marimo workspace](https://github.com/xRiskLab/rfgboost-marimo) with:
+
+**Features:**
+- 🎛️ **Real-time Parameter Tuning**: Interactive controls with instant updates
+- 📊 **Comprehensive Analytics**: Bank loan dataset analysis
+- 📈 **Performance Tracking**: Multi-metric evaluation and overfitting detection
+- 🎯 **Feature Analysis**: Importance rankings and WOE insights
+- 🗺️ **Decision Surfaces**: 2D model behavior exploration
+- 🎪 **Uncertainty Quantification**: Confidence interval visualization
+
+**Benefits of Marimo:**
+- ✅ **Reactive**: Auto-updates when parameters change
+- ✅ **Reproducible**: No hidden state issues
+- ✅ **Git-friendly**: Plain Python files
+- ✅ **Modern UI**: Rich interactive components
 
 ## 📊 Advanced Features
 
