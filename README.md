@@ -27,7 +27,10 @@ rfgboost/
 │   ├── tuning-rfgboost.ipynb          # Hyperparameter tuning guide
 │   ├── uncertainty-estimation.ipynb    # Confidence intervals demo
 │   └── rfgboost-animation.ipynb       # Visualization examples
-
+├── marimo/                      # 🌊 Interactive Marimo notebooks
+│   ├── marimo_notebook.py      # RFGBoost model dashboard
+│   ├── marimo_notebook.ipynb   # RFGBoost model dashboard in IPython Notebook
+│   └── README.md               # Marimo notebook documentation
 ├── scripts/                     # 🔧 Utilities and CI/CD scripts
 │   └── test_compatibility.py   # Custom compatibility testing script
 ├── .github/workflows/           # ⚡ Professional CI/CD pipelines
