@@ -9,22 +9,25 @@ Interactive notebooks built with [Marimo](https://marimo.io) for exploring RFGBo
 - 📊 Real bank dataset analysis (or synthetic fallback)
 - 🎛️ Complete hyperparameter exploration
 - 📈 Multi-metric performance tracking
-- 🔍 Weight of Evidence insights
 - 📋 Overfitting detection
 
 ## 🏃 Quick Start
 
 1. **Install dependencies**:
-   ```bash
-   uv sync --dev  # Installs marimo and all dependencies
-   ```
+```bash
+uv sync --dev  # Installs marimo and all dependencies
+```
 
-2. **Covert to IPython Notebook**:
-   ```bash
-   uv run marimo export ipynb marimo/marimo_notebook.py -o marimo/marimo_notebook.ipynb
-   ```
+2. **Convert to IPython Notebook**:
+```bash
+uv run marimo export ipynb marimo/marimo_notebook.py -o marimo/marimo_notebook.ipynb
+```
 
 3. **Open in browser**: Marimo will automatically open the interactive notebook in your browser
+
+```bash
+uv run marimo edit marimo/marimo_notebook.py
+```
 
 ## ✨ Features Demonstrated
 
