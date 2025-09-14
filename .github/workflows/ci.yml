@@ -41,15 +41,16 @@ jobs:
     
     - name: Run tests
       run: |
-        uv run python -m pytest tests/ -v --tb=short --cov=rfgboost --cov-report=xml
+        uv run python -m pytest tests/ -v --tb=short
     
-    - name: Upload coverage to Codecov
-      if: matrix.python-version == '3.11'
-      uses: codecov/codecov-action@v3
-      with:
-        file: ./coverage.xml
-        flags: unittests
-        name: codecov-umbrella
+    # Coverage reporting disabled until pytest-cov is added to dependencies
+    # - name: Upload coverage to Codecov
+    #   if: matrix.python-version == '3.11'
+    #   uses: codecov/codecov-action@v3
+    #   with:
+    #     file: ./coverage.xml
+    #     flags: unittests
+    #     name: codecov-umbrella
 
   lint:
     runs-on: ubuntu-latest

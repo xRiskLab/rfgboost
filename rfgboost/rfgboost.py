@@ -2,7 +2,7 @@
 
 import contextlib
 import warnings
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -28,28 +28,28 @@ class RFGBoost(BaseEstimator):
     def __init__(
         self,
         n_estimators: int = 10,
-        rf_params: Optional[Dict[str, Any]] = None,
+        rf_params: Optional[dict[str, Any]] = None,
         learning_rate: float = 0.1,
         task: str = "regression",
-        cat_features: Optional[List[str]] = None,
-        woe_kwargs: Optional[Dict[str, Any]] = None,
+        cat_features: Optional[list[str]] = None,
+        woe_kwargs: Optional[dict[str, Any]] = None,
         base_learner: str = "sklearn",
     ):
         """RFGBoost constructor."""
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
         # Store original parameter value for sklearn compatibility
-        self.rf_params: Optional[Dict[str, Any]] = rf_params
+        self.rf_params: Optional[dict[str, Any]] = rf_params
         self.task = task
-        self.models: List[Any] = []
+        self.models: list[Any] = []
         self.initial_pred: Optional[float] = None
-        self.cat_features: Optional[List[str]] = cat_features
+        self.cat_features: Optional[list[str]] = cat_features
         self.woe_encoder: Optional[FastWoe] = None
         # Store original parameter value for sklearn compatibility
-        self.woe_kwargs: Optional[Dict[str, Any]] = woe_kwargs
+        self.woe_kwargs: Optional[dict[str, Any]] = woe_kwargs
         self.prior: Optional[float] = None
-        self.label_mapping: Optional[Dict[Any, int]] = None
-        self.feature_names_: Optional[List[str]] = None
+        self.label_mapping: Optional[dict[Any, int]] = None
+        self.feature_names_: Optional[list[str]] = None
 
         # Base learner configuration
         self.base_learner = base_learner
