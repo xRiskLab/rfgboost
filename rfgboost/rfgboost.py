@@ -629,7 +629,7 @@ class RFGBoost(BaseEstimator):
 
                     leaf_nodes = tree_subset[tree_subset["Feature"] == "Leaf"]
                     leaf_to_value = dict(
-                        zip(leaf_nodes["Node"], leaf_nodes["Gain"], strict=False)
+                        zip(leaf_nodes["Node"], leaf_nodes["Gain"])
                     )
 
                     sample_leaf_indices = (
