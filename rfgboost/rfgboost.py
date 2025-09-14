@@ -909,7 +909,7 @@ class RFGBoost(BaseEstimator):
             raise ValueError(f"Unknown base_learner: {self.base_learner}")
 
     def trees_to_dataframe(
-        self, X: pd.DataFrame | None = None, y: pd.Series | None = None
+        self, X: Optional[pd.DataFrame] = None, y: Optional[pd.Series] = None
     ):
         """
         Returns a DataFrame for each leaf node with path conditions.

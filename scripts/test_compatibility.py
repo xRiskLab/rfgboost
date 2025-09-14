@@ -13,26 +13,33 @@ def test_imports():  # sourcery skip: extract-duplicate-method, extract-method
     try:
         # Test core package import
         import rfgboost
+
         print(f"fgboost v{rfgboost.__version__} imported successfully")
 
         # Test main class import
         from rfgboost import RFGBoost  # noqa: F401
+
         print("RFGBoost class imported successfully")
 
         # Test key dependencies
         import pandas as pd
+
         print(f"pandas v{pd.__version__} available")
 
         import numpy as np
+
         print(f"numpy v{np.__version__} available")
 
         import sklearn
+
         print(f"scikit-learn v{sklearn.__version__} available")
 
         import xgboost as xgb
+
         print(f"xgboost v{xgb.__version__} available")
 
         import fastwoe
+
         print(f"fastwoe v{fastwoe.__version__} available")
 
         return True
@@ -56,21 +63,23 @@ def test_basic_functionality():  # sourcery skip: extract-method
         from rfgboost import RFGBoost
 
         # Create simple test data
-        data = pd.DataFrame({
-            'cat_feature': ['A', 'B', 'C'] * 10,
-            'num_feature': np.random.normal(0, 1, 30),
-            'target': np.random.binomial(1, 0.5, 30)
-        })
+        data = pd.DataFrame(
+            {
+                "cat_feature": ["A", "B", "C"] * 10,
+                "num_feature": np.random.normal(0, 1, 30),
+                "target": np.random.binomial(1, 0.5, 30),
+            }
+        )
 
-        X = data.drop('target', axis=1)
-        y = data['target']
+        X = data.drop("target", axis=1)
+        y = data["target"]
 
         # Test sklearn base learner
         model_sklearn = RFGBoost(
             n_estimators=2,
-            task='classification',
-            cat_features=['cat_feature'],
-            base_learner='sklearn'
+            task="classification",
+            cat_features=["cat_feature"],
+            base_learner="sklearn",
         )
         model_sklearn.fit(X, y)
         predictions_sklearn = model_sklearn.predict_proba(X)
@@ -79,9 +88,9 @@ def test_basic_functionality():  # sourcery skip: extract-method
         # Test xgboost base learner
         model_xgb = RFGBoost(
             n_estimators=2,
-            task='classification',
-            cat_features=['cat_feature'],
-            base_learner='xgboost'
+            task="classification",
+            cat_features=["cat_feature"],
+            base_learner="xgboost",
         )
         model_xgb.fit(X, y)
         predictions_xgb = model_xgb.predict_proba(X)
@@ -133,11 +142,7 @@ def main():
         sys.exit(0 if success else 1)
 
     # Run all tests
-    tests = [
-        test_python_version_compatibility,
-        test_imports,
-        test_basic_functionality
-    ]
+    tests = [test_python_version_compatibility, test_imports, test_basic_functionality]
 
     results = []
     for test in tests:
