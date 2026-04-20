@@ -1,10 +1,12 @@
 """Tests for TreeSHAP: exact match with official SHAP package."""
 
 import numpy as np
-import shap
+import pytest
 from sklearn.tree import DecisionTreeClassifier
 
 from rfgboost import DecisionTree, TreeSHAP
+
+shap = pytest.importorskip("shap")
 
 
 def _make_data():
