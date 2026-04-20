@@ -1,11 +1,22 @@
-"""
-RFGBoost: Random Forest Gradient Boosting with scikit-learn, XGBoost, and FastWoe.
-"""
+"""RFGBoost: async Random Forest + gradient boosting engine in Rust."""
 
-from .rfgboost import RFGBoost
+from rfgboost._rs import (
+    DecisionTree,
+    RandomForestRegressor,
+    RandomForestUnsupervised,
+    TreeSHAP,
+)
+from rfgboost._rs import (
+    RandomForest as RandomForestClassifier,
+)
+from rfgboost._woe import RFGBoostClassifier, RFGBoostRegressor
 
-__version__ = "0.1.0"
-__author__ = "xRiskLab"
-__email__ = "contact@xrisklab.ai"
-
-__all__ = ["RFGBoost"]
+__all__ = [
+    "DecisionTree",
+    "RandomForestClassifier",
+    "RandomForestRegressor",
+    "RandomForestUnsupervised",
+    "TreeSHAP",
+    "RFGBoostClassifier",
+    "RFGBoostRegressor",
+]
