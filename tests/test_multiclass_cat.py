@@ -1,7 +1,6 @@
 """Multiclass and cat_features integration tests for RFGBoostClassifier."""
 
 import numpy as np
-import pytest
 from sklearn.datasets import load_iris
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
