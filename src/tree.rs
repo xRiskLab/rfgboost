@@ -5,6 +5,60 @@ use std::collections::HashMap;
 
 use crate::histogram::HistogramData;
 
+/// Seed an RNG. If random_state is None, use OS entropy for non-determinism.
+/// If Some, use the value as a fixed seed for reproducibility.
+pub fn seed_rng(random_state: Option<u64>) -> Pcg64 {
+    match random_state {
+        Some(seed) => Pcg64::seed_from_u64(seed),
+        None => Pcg64::from_entropy(),
+    }
+}
+
+/// Check that X and y contain no NaN or infinite values.
+/// Returns Err with a descriptive message if invalid values are found.
+pub fn validate_finite(x: &ArrayView2<f64>, y: &[f64]) -> Result<(), String> {
+    for i in 0..x.nrows() {
+        for j in 0..x.ncols() {
+            let v = x[[i, j]];
+            if !v.is_finite() {
+                return Err(format!(
+                    "X contains non-finite value at row {}, column {} ({}). \
+                     Impute or drop missing values before fitting.",
+                    i, j, v
+                ));
+            }
+        }
+    }
+    for (i, &v) in y.iter().enumerate() {
+        if !v.is_finite() {
+            return Err(format!(
+                "y contains non-finite value at index {} ({}).",
+                i, v
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validate sample_weight: must be finite and non-negative, length must match n.
+pub fn validate_weights(w: &[f64], n: usize) -> Result<(), String> {
+    if w.len() != n {
+        return Err(format!(
+            "sample_weight length ({}) does not match number of samples ({})",
+            w.len(), n
+        ));
+    }
+    for (i, &v) in w.iter().enumerate() {
+        if !v.is_finite() || v < 0.0 {
+            return Err(format!(
+                "sample_weight[{}] = {} is not a non-negative finite number",
+                i, v
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct TreeNode {
     pub feature: usize,
@@ -13,7 +67,8 @@ pub struct TreeNode {
     pub right: Option<Box<TreeNode>>,
     pub value: f64,
     pub samples: usize,
-    pub class_counts: Option<HashMap<usize, usize>>,
+    /// Weighted class counts at this node (sum of sample_weight per class).
+    pub class_counts: Option<HashMap<usize, f64>>,
 }
 
 #[derive(Clone)]
@@ -55,6 +110,7 @@ pub fn sample_features(max_feat: usize, n_features: usize, rng: &mut Pcg64) -> V
 pub fn build_tree_on_bootstrap(
     x: &ArrayView2<f64>,
     y: &[f64],
+    weights: &[f64],
     bootstrap_indices: &[usize],
     config: &TreeConfig,
     rng: &mut Pcg64,
@@ -64,6 +120,7 @@ pub fn build_tree_on_bootstrap(
     let n_feat = x.ncols();
     let mut x_boot = Array2::zeros((n_boot, n_feat));
     let mut y_boot = vec![0.0; n_boot];
+    let mut w_boot = vec![0.0; n_boot];
 
     let mut boot_hist_bins = Vec::with_capacity(n_feat);
     for feat in 0..n_feat {
@@ -76,6 +133,7 @@ pub fn build_tree_on_bootstrap(
 
     for (new_row, &old_row) in bootstrap_indices.iter().enumerate() {
         y_boot[new_row] = y[old_row];
+        w_boot[new_row] = weights[old_row];
         for col in 0..n_feat {
             x_boot[[new_row, col]] = x[[old_row, col]];
         }
@@ -88,12 +146,13 @@ pub fn build_tree_on_bootstrap(
     };
 
     let indices: Vec<usize> = (0..n_boot).collect();
-    build_node(&x_boot.view(), &y_boot, &indices, 0, config, rng, &boot_hist)
+    build_node(&x_boot.view(), &y_boot, &w_boot, &indices, 0, config, rng, &boot_hist)
 }
 
 pub fn build_tree_on_bootstrap_exact(
     x: &ArrayView2<f64>,
     y: &[f64],
+    weights: &[f64],
     bootstrap_indices: &[usize],
     config: &TreeConfig,
     rng: &mut Pcg64,
@@ -102,21 +161,24 @@ pub fn build_tree_on_bootstrap_exact(
     let n_feat = x.ncols();
     let mut x_boot = Array2::zeros((n_boot, n_feat));
     let mut y_boot = vec![0.0; n_boot];
+    let mut w_boot = vec![0.0; n_boot];
 
     for (new_row, &old_row) in bootstrap_indices.iter().enumerate() {
         y_boot[new_row] = y[old_row];
+        w_boot[new_row] = weights[old_row];
         for col in 0..n_feat {
             x_boot[[new_row, col]] = x[[old_row, col]];
         }
     }
 
     let indices: Vec<usize> = (0..n_boot).collect();
-    build_node_exact(&x_boot.view(), &y_boot, &indices, 0, config, rng)
+    build_node_exact(&x_boot.view(), &y_boot, &w_boot, &indices, 0, config, rng)
 }
 
 pub fn build_node(
     x: &ArrayView2<f64>,
     y: &[f64],
+    w: &[f64],
     indices: &[usize],
     depth: usize,
     config: &TreeConfig,
@@ -126,15 +188,15 @@ pub fn build_node(
     let n = indices.len();
 
     if n < config.min_samples_split || config.max_depth.is_some_and(|md| depth >= md) {
-        return create_leaf(y, indices, config);
+        return create_leaf(y, w, indices, config);
     }
     if config.is_classification && is_pure(y, indices) {
-        return create_leaf(y, indices, config);
+        return create_leaf(y, w, indices, config);
     }
 
-    let (best_feat, best_thresh, best_gain) = find_best_split_hist(x, y, indices, config, rng, hist);
+    let (best_feat, best_thresh, best_gain) = find_best_split_hist(x, y, w, indices, config, rng, hist);
     if best_gain <= 0.0 {
-        return create_leaf(y, indices, config);
+        return create_leaf(y, w, indices, config);
     }
 
     let (mut left_idx, mut right_idx) = (Vec::new(), Vec::new());
@@ -147,14 +209,14 @@ pub fn build_node(
     }
 
     if left_idx.len() < config.min_samples_leaf || right_idx.len() < config.min_samples_leaf {
-        return create_leaf(y, indices, config);
+        return create_leaf(y, w, indices, config);
     }
 
     TreeNode {
         feature: best_feat,
         threshold: best_thresh,
-        left: Some(Box::new(build_node(x, y, &left_idx, depth + 1, config, rng, hist))),
-        right: Some(Box::new(build_node(x, y, &right_idx, depth + 1, config, rng, hist))),
+        left: Some(Box::new(build_node(x, y, w, &left_idx, depth + 1, config, rng, hist))),
+        right: Some(Box::new(build_node(x, y, w, &right_idx, depth + 1, config, rng, hist))),
         value: 0.0,
         samples: n,
         class_counts: None,
@@ -164,6 +226,7 @@ pub fn build_node(
 pub fn build_node_exact(
     x: &ArrayView2<f64>,
     y: &[f64],
+    w: &[f64],
     indices: &[usize],
     depth: usize,
     config: &TreeConfig,
@@ -172,15 +235,15 @@ pub fn build_node_exact(
     let n = indices.len();
 
     if n < config.min_samples_split || config.max_depth.is_some_and(|md| depth >= md) {
-        return create_leaf(y, indices, config);
+        return create_leaf(y, w, indices, config);
     }
     if config.is_classification && is_pure(y, indices) {
-        return create_leaf(y, indices, config);
+        return create_leaf(y, w, indices, config);
     }
 
-    let (best_feat, best_thresh, best_gain) = find_best_split_exact(x, y, indices, config, rng);
+    let (best_feat, best_thresh, best_gain) = find_best_split_exact(x, y, w, indices, config, rng);
     if best_gain <= 0.0 {
-        return create_leaf(y, indices, config);
+        return create_leaf(y, w, indices, config);
     }
 
     let (mut left_idx, mut right_idx) = (Vec::new(), Vec::new());
@@ -193,14 +256,14 @@ pub fn build_node_exact(
     }
 
     if left_idx.len() < config.min_samples_leaf || right_idx.len() < config.min_samples_leaf {
-        return create_leaf(y, indices, config);
+        return create_leaf(y, w, indices, config);
     }
 
     TreeNode {
         feature: best_feat,
         threshold: best_thresh,
-        left: Some(Box::new(build_node_exact(x, y, &left_idx, depth + 1, config, rng))),
-        right: Some(Box::new(build_node_exact(x, y, &right_idx, depth + 1, config, rng))),
+        left: Some(Box::new(build_node_exact(x, y, w, &left_idx, depth + 1, config, rng))),
+        right: Some(Box::new(build_node_exact(x, y, w, &right_idx, depth + 1, config, rng))),
         value: 0.0,
         samples: n,
         class_counts: None,
@@ -215,16 +278,16 @@ fn is_pure(y: &[f64], indices: &[usize]) -> bool {
     indices.iter().all(|&i| (y[i] as usize) == first)
 }
 
-fn create_leaf(y: &[f64], indices: &[usize], config: &TreeConfig) -> TreeNode {
+fn create_leaf(y: &[f64], w: &[f64], indices: &[usize], config: &TreeConfig) -> TreeNode {
     let n = indices.len();
     if config.is_classification {
-        let mut counts: HashMap<usize, usize> = HashMap::new();
+        let mut counts: HashMap<usize, f64> = HashMap::new();
         for &i in indices {
-            *counts.entry(y[i] as usize).or_insert(0) += 1;
+            *counts.entry(y[i] as usize).or_insert(0.0) += w[i];
         }
         let majority = counts
             .iter()
-            .max_by_key(|(_, c)| *c)
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
             .map(|(cls, _)| *cls)
             .unwrap_or(0);
         TreeNode {
@@ -237,7 +300,13 @@ fn create_leaf(y: &[f64], indices: &[usize], config: &TreeConfig) -> TreeNode {
             class_counts: Some(counts),
         }
     } else {
-        let mean = indices.iter().map(|&i| y[i]).sum::<f64>() / n as f64;
+        let mut sw = 0.0_f64;
+        let mut swy = 0.0_f64;
+        for &i in indices {
+            sw += w[i];
+            swy += w[i] * y[i];
+        }
+        let mean = if sw > 0.0 { swy / sw } else { 0.0 };
         TreeNode {
             feature: 0,
             threshold: 0.0,
@@ -253,13 +322,17 @@ fn create_leaf(y: &[f64], indices: &[usize], config: &TreeConfig) -> TreeNode {
 fn find_best_split_hist(
     x: &ArrayView2<f64>,
     y: &[f64],
+    w: &[f64],
     indices: &[usize],
     config: &TreeConfig,
     rng: &mut Pcg64,
     hist: &HistogramData,
 ) -> (usize, f64, f64) {
     let n = indices.len();
-    let n_f64 = n as f64;
+    let total_w: f64 = indices.iter().map(|&i| w[i]).sum();
+    if total_w <= 0.0 {
+        return (0, 0.0, 0.0);
+    }
     let (mut best_feat, mut best_thresh, mut best_gain) = (0, 0.0, 0.0);
     let n_features = x.ncols();
 
@@ -274,52 +347,60 @@ fn find_best_split_hist(
     };
 
     if config.is_classification {
-        let mut total_counts: HashMap<usize, usize> = HashMap::new();
+        let mut total_counts: HashMap<usize, f64> = HashMap::new();
         for &i in indices {
-            *total_counts.entry(y[i] as usize).or_insert(0) += 1;
+            *total_counts.entry(y[i] as usize).or_insert(0.0) += w[i];
         }
         let parent_impurity = 1.0
-            - total_counts.values().map(|&c| (c as f64 / n_f64).powi(2)).sum::<f64>();
+            - total_counts.values().map(|&c| (c / total_w).powi(2)).sum::<f64>();
 
         for &feat in &features_to_try {
             let nb = hist.n_bins[feat];
             if nb <= 1 { continue; }
 
-            let mut bin_counts: Vec<HashMap<usize, usize>> = vec![HashMap::new(); nb];
-            let mut bin_totals = vec![0usize; nb];
+            let mut bin_counts: Vec<HashMap<usize, f64>> = vec![HashMap::new(); nb];
+            let mut bin_totals = vec![0.0_f64; nb];
+            let mut bin_n = vec![0usize; nb];
             for &i in indices {
                 let b = hist.bin_indices[feat][i] as usize;
                 let cls = y[i] as usize;
-                *bin_counts[b].entry(cls).or_insert(0) += 1;
-                bin_totals[b] += 1;
+                *bin_counts[b].entry(cls).or_insert(0.0) += w[i];
+                bin_totals[b] += w[i];
+                bin_n[b] += 1;
             }
 
-            let mut left_counts: HashMap<usize, usize> = HashMap::new();
+            let mut left_counts: HashMap<usize, f64> = HashMap::new();
+            let mut left_w = 0.0_f64;
             let mut left_n: usize = 0;
 
             for b in 0..nb - 1 {
                 for (&cls, &cnt) in &bin_counts[b] {
-                    *left_counts.entry(cls).or_insert(0) += cnt;
+                    *left_counts.entry(cls).or_insert(0.0) += cnt;
                 }
-                left_n += bin_totals[b];
+                left_w += bin_totals[b];
+                left_n += bin_n[b];
                 let right_n = n - left_n;
+                let right_w = total_w - left_w;
 
                 if left_n < config.min_samples_leaf || right_n < config.min_samples_leaf {
                     continue;
                 }
+                if left_w <= 0.0 || right_w <= 0.0 {
+                    continue;
+                }
 
                 let left_gini = 1.0
-                    - left_counts.values().map(|&c| (c as f64 / left_n as f64).powi(2)).sum::<f64>();
+                    - left_counts.values().map(|&c| (c / left_w).powi(2)).sum::<f64>();
                 let right_gini = {
                     let mut rg = 1.0;
                     for (&cls, &tc) in &total_counts {
-                        let lc = *left_counts.get(&cls).unwrap_or(&0);
+                        let lc = *left_counts.get(&cls).unwrap_or(&0.0);
                         let rc = tc - lc;
-                        rg -= (rc as f64 / right_n as f64).powi(2);
+                        rg -= (rc / right_w).powi(2);
                     }
                     rg
                 };
-                let weighted = (left_n as f64 * left_gini + right_n as f64 * right_gini) / n_f64;
+                let weighted = (left_w * left_gini + right_w * right_gini) / total_w;
                 let gain = parent_impurity - weighted;
 
                 if gain > best_gain {
@@ -330,43 +411,51 @@ fn find_best_split_hist(
             }
         }
     } else {
-        let total_sum: f64 = indices.iter().map(|&i| y[i]).sum();
-        let total_sq_sum: f64 = indices.iter().map(|&i| y[i] * y[i]).sum();
-        let parent_var = total_sq_sum / n_f64 - (total_sum / n_f64).powi(2);
+        let total_wy: f64 = indices.iter().map(|&i| w[i] * y[i]).sum();
+        let total_wyy: f64 = indices.iter().map(|&i| w[i] * y[i] * y[i]).sum();
+        let parent_var = total_wyy / total_w - (total_wy / total_w).powi(2);
 
         for &feat in &features_to_try {
             let nb = hist.n_bins[feat];
             if nb <= 1 { continue; }
 
-            let mut bin_sum = vec![0.0; nb];
-            let mut bin_sq_sum = vec![0.0; nb];
-            let mut bin_count = vec![0usize; nb];
+            let mut bin_wy = vec![0.0; nb];
+            let mut bin_wyy = vec![0.0; nb];
+            let mut bin_w = vec![0.0_f64; nb];
+            let mut bin_n = vec![0usize; nb];
             for &i in indices {
                 let b = hist.bin_indices[feat][i] as usize;
-                bin_sum[b] += y[i];
-                bin_sq_sum[b] += y[i] * y[i];
-                bin_count[b] += 1;
+                bin_wy[b] += w[i] * y[i];
+                bin_wyy[b] += w[i] * y[i] * y[i];
+                bin_w[b] += w[i];
+                bin_n[b] += 1;
             }
 
-            let mut left_sum = 0.0;
-            let mut left_sq_sum = 0.0;
+            let mut left_wy = 0.0;
+            let mut left_wyy = 0.0;
+            let mut left_w = 0.0_f64;
             let mut left_n: usize = 0;
 
             for b in 0..nb - 1 {
-                left_sum += bin_sum[b];
-                left_sq_sum += bin_sq_sum[b];
-                left_n += bin_count[b];
+                left_wy += bin_wy[b];
+                left_wyy += bin_wyy[b];
+                left_w += bin_w[b];
+                left_n += bin_n[b];
                 let right_n = n - left_n;
+                let right_w = total_w - left_w;
 
                 if left_n < config.min_samples_leaf || right_n < config.min_samples_leaf {
                     continue;
                 }
+                if left_w <= 0.0 || right_w <= 0.0 {
+                    continue;
+                }
 
-                let right_sum = total_sum - left_sum;
-                let right_sq_sum = total_sq_sum - left_sq_sum;
-                let left_var = left_sq_sum / left_n as f64 - (left_sum / left_n as f64).powi(2);
-                let right_var = right_sq_sum / right_n as f64 - (right_sum / right_n as f64).powi(2);
-                let weighted = (left_n as f64 * left_var + right_n as f64 * right_var) / n_f64;
+                let right_wy = total_wy - left_wy;
+                let right_wyy = total_wyy - left_wyy;
+                let left_var = left_wyy / left_w - (left_wy / left_w).powi(2);
+                let right_var = right_wyy / right_w - (right_wy / right_w).powi(2);
+                let weighted = (left_w * left_var + right_w * right_var) / total_w;
                 let gain = parent_var - weighted;
 
                 if gain > best_gain {
@@ -383,12 +472,16 @@ fn find_best_split_hist(
 fn find_best_split_exact(
     x: &ArrayView2<f64>,
     y: &[f64],
+    w: &[f64],
     indices: &[usize],
     config: &TreeConfig,
     rng: &mut Pcg64,
 ) -> (usize, f64, f64) {
     let n = indices.len();
-    let n_f64 = n as f64;
+    let total_w: f64 = indices.iter().map(|&i| w[i]).sum();
+    if total_w <= 0.0 {
+        return (0, 0.0, 0.0);
+    }
     let (mut best_feat, mut best_thresh, mut best_gain) = (0, 0.0, 0.0);
     let n_features = x.ncols();
 
@@ -404,28 +497,32 @@ fn find_best_split_exact(
     };
 
     if config.is_classification {
-        let mut total_counts: HashMap<usize, usize> = HashMap::new();
+        let mut total_counts: HashMap<usize, f64> = HashMap::new();
         for &i in indices {
-            *total_counts.entry(y[i] as usize).or_insert(0) += 1;
+            *total_counts.entry(y[i] as usize).or_insert(0.0) += w[i];
         }
         let parent_impurity = 1.0
-            - total_counts.values().map(|&c| (c as f64 / n_f64).powi(2)).sum::<f64>();
+            - total_counts.values().map(|&c| (c / total_w).powi(2)).sum::<f64>();
 
         for &feat in &features_to_try {
             let mut sorted: Vec<usize> = indices.to_vec();
             sorted.sort_by(|&a, &b| x[[a, feat]].partial_cmp(&x[[b, feat]]).unwrap());
 
-            let mut left_counts: HashMap<usize, usize> = HashMap::new();
+            let mut left_counts: HashMap<usize, f64> = HashMap::new();
             let mut right_counts = total_counts.clone();
+            let mut left_w = 0.0_f64;
             let mut left_n: usize = 0;
 
             for i in 0..sorted.len() - 1 {
                 let idx = sorted[i];
                 let cls = y[idx] as usize;
-                *left_counts.entry(cls).or_insert(0) += 1;
-                *right_counts.get_mut(&cls).unwrap() -= 1;
+                let wi = w[idx];
+                *left_counts.entry(cls).or_insert(0.0) += wi;
+                *right_counts.get_mut(&cls).unwrap() -= wi;
+                left_w += wi;
                 left_n += 1;
                 let right_n = n - left_n;
+                let right_w = total_w - left_w;
 
                 if x[[idx, feat]] == x[[sorted[i + 1], feat]] {
                     continue;
@@ -433,12 +530,15 @@ fn find_best_split_exact(
                 if left_n < config.min_samples_leaf || right_n < config.min_samples_leaf {
                     continue;
                 }
+                if left_w <= 0.0 || right_w <= 0.0 {
+                    continue;
+                }
 
                 let left_gini = 1.0
-                    - left_counts.values().map(|&c| (c as f64 / left_n as f64).powi(2)).sum::<f64>();
+                    - left_counts.values().map(|&c| (c / left_w).powi(2)).sum::<f64>();
                 let right_gini = 1.0
-                    - right_counts.values().map(|&c| (c as f64 / right_n as f64).powi(2)).sum::<f64>();
-                let weighted = (left_n as f64 * left_gini + right_n as f64 * right_gini) / n_f64;
+                    - right_counts.values().map(|&c| (c / right_w).powi(2)).sum::<f64>();
+                let weighted = (left_w * left_gini + right_w * right_gini) / total_w;
                 let gain = parent_impurity - weighted;
 
                 if gain > best_gain {
@@ -449,25 +549,29 @@ fn find_best_split_exact(
             }
         }
     } else {
-        let total_sum: f64 = indices.iter().map(|&i| y[i]).sum();
-        let total_sq_sum: f64 = indices.iter().map(|&i| y[i] * y[i]).sum();
-        let parent_var = total_sq_sum / n_f64 - (total_sum / n_f64).powi(2);
+        let total_wy: f64 = indices.iter().map(|&i| w[i] * y[i]).sum();
+        let total_wyy: f64 = indices.iter().map(|&i| w[i] * y[i] * y[i]).sum();
+        let parent_var = total_wyy / total_w - (total_wy / total_w).powi(2);
 
         for &feat in &features_to_try {
             let mut sorted: Vec<usize> = indices.to_vec();
             sorted.sort_by(|&a, &b| x[[a, feat]].partial_cmp(&x[[b, feat]]).unwrap());
 
-            let mut left_sum: f64 = 0.0;
-            let mut left_sq_sum: f64 = 0.0;
+            let mut left_wy: f64 = 0.0;
+            let mut left_wyy: f64 = 0.0;
+            let mut left_w = 0.0_f64;
             let mut left_n: usize = 0;
 
             for i in 0..sorted.len() - 1 {
                 let idx = sorted[i];
                 let val = y[idx];
-                left_sum += val;
-                left_sq_sum += val * val;
+                let wi = w[idx];
+                left_wy += wi * val;
+                left_wyy += wi * val * val;
+                left_w += wi;
                 left_n += 1;
                 let right_n = n - left_n;
+                let right_w = total_w - left_w;
 
                 if x[[idx, feat]] == x[[sorted[i + 1], feat]] {
                     continue;
@@ -475,12 +579,15 @@ fn find_best_split_exact(
                 if left_n < config.min_samples_leaf || right_n < config.min_samples_leaf {
                     continue;
                 }
+                if left_w <= 0.0 || right_w <= 0.0 {
+                    continue;
+                }
 
-                let right_sum = total_sum - left_sum;
-                let right_sq_sum = total_sq_sum - left_sq_sum;
-                let left_var = left_sq_sum / left_n as f64 - (left_sum / left_n as f64).powi(2);
-                let right_var = right_sq_sum / right_n as f64 - (right_sum / right_n as f64).powi(2);
-                let weighted = (left_n as f64 * left_var + right_n as f64 * right_var) / n_f64;
+                let right_wy = total_wy - left_wy;
+                let right_wyy = total_wyy - left_wyy;
+                let left_var = left_wyy / left_w - (left_wy / left_w).powi(2);
+                let right_var = right_wyy / right_w - (right_wy / right_w).powi(2);
+                let weighted = (left_w * left_var + right_w * right_var) / total_w;
                 let gain = parent_var - weighted;
 
                 if gain > best_gain {
@@ -522,11 +629,11 @@ pub fn traverse_proba(node: &TreeNode, sample: &[f64], n_classes: usize) -> Vec<
     }
     let mut probs = vec![0.0; n_classes];
     if let Some(counts) = &cur.class_counts {
-        let total: usize = counts.values().sum();
-        if total > 0 {
+        let total: f64 = counts.values().sum();
+        if total > 0.0 {
             for (&cls, &cnt) in counts {
                 if cls < n_classes {
-                    probs[cls] = cnt as f64 / total as f64;
+                    probs[cls] = cnt / total;
                 }
             }
         }

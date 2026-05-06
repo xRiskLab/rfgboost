@@ -1,8 +1,6 @@
 use numpy::{PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use rand::prelude::*;
-use rand_pcg::Pcg64;
 
 use crate::tree::{build_node_exact, traverse, traverse_proba, TreeConfig, TreeNode};
 
@@ -55,9 +53,27 @@ impl DecisionTree {
         }
     }
 
-    fn fit(&mut self, x: PyReadonlyArray2<f64>, y: PyReadonlyArray1<f64>) -> PyResult<()> {
+    #[pyo3(signature = (x, y, sample_weight=None))]
+    fn fit(
+        &mut self,
+        x: PyReadonlyArray2<f64>,
+        y: PyReadonlyArray1<f64>,
+        sample_weight: Option<PyReadonlyArray1<f64>>,
+    ) -> PyResult<()> {
         let x_arr = x.as_array();
         let y_arr = y.as_array();
+        let y_slice_check = y_arr.as_slice().unwrap();
+        crate::tree::validate_finite(&x_arr.view(), y_slice_check)
+            .map_err(PyValueError::new_err)?;
+        let n_samples = x_arr.nrows();
+        let weights: Vec<f64> = match sample_weight {
+            Some(arr) => {
+                let v: Vec<f64> = arr.as_array().to_vec();
+                crate::tree::validate_weights(&v, n_samples).map_err(PyValueError::new_err)?;
+                v
+            }
+            None => vec![1.0; n_samples],
+        };
 
         if self.task == "classification" {
             let mut classes: Vec<usize> = y_arr.iter().map(|&v| v as usize).collect();
@@ -74,10 +90,9 @@ impl DecisionTree {
             max_features: None,
         };
         let y_slice = y_arr.as_slice().unwrap();
-        let n_samples = x_arr.nrows();
         let indices: Vec<usize> = (0..n_samples).collect();
-        let mut rng = Pcg64::seed_from_u64(self.random_state.unwrap_or(42));
-        self.root = Some(build_node_exact(&x_arr.view(), y_slice, &indices, 0, &config, &mut rng));
+        let mut rng = crate::tree::seed_rng(self.random_state);
+        self.root = Some(build_node_exact(&x_arr.view(), y_slice, &weights, &indices, 0, &config, &mut rng));
         self.is_fitted = true;
         Ok(())
     }

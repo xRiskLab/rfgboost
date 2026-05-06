@@ -2,12 +2,10 @@
 
 from rfgboost._rs import (
     DecisionTree,
+    RandomForestClassifier,
     RandomForestRegressor,
     RandomForestUnsupervised,
     TreeSHAP,
-)
-from rfgboost._rs import (
-    RandomForest as RandomForestClassifier,
 )
 from rfgboost._woe import RFGBoostClassifier, RFGBoostRegressor
 
@@ -15,7 +13,7 @@ __all__ = [
     "DecisionTree",
     "RandomForestClassifier",
     "RandomForestRegressor",
-    "RandomForestUnsupervised",
+    "RandomForestUnsupervised",  # TODO: Evaluate if needed
     "TreeSHAP",
     "RFGBoostClassifier",
     "RFGBoostRegressor",

@@ -131,7 +131,7 @@ impl RandomForestUnsupervised {
         let x_arr = x.as_array();
         let n_samples = x_arr.nrows();
         let n_features = x_arr.ncols();
-        let mut rng = Pcg64::seed_from_u64(self.random_state.unwrap_or(42));
+        let mut rng = crate::tree::seed_rng(self.random_state);
 
         self.n_original = n_samples;
 
@@ -188,6 +188,7 @@ impl RandomForestUnsupervised {
         }
 
         let global_hist = HistogramData::build(&x_combined.view(), n_total, n_features);
+        let weights = vec![1.0_f64; n_total];
 
         // Build trees in parallel
         let results: Vec<(TreeNode, HashSet<usize>)> = tree_params
@@ -195,7 +196,7 @@ impl RandomForestUnsupervised {
             .map(|(boot, seed, oob)| {
                 let mut tree_rng = Pcg64::seed_from_u64(seed);
                 let tree = build_tree_on_bootstrap(
-                    &x_combined.view(), &y_combined, &boot, &config, &mut tree_rng, &global_hist,
+                    &x_combined.view(), &y_combined, &weights, &boot, &config, &mut tree_rng, &global_hist,
                 );
                 (tree, oob)
             })
@@ -410,7 +411,7 @@ impl RandomForestUnsupervised {
             .sum::<f64>() / n_trees as f64;
 
         // Permutation importance per feature
-        let mut rng = Pcg64::seed_from_u64(self.random_state.unwrap_or(42));
+        let mut rng = crate::tree::seed_rng(self.random_state);
         let mut importances = vec![0.0; n_features];
 
         for feat in 0..n_features {
