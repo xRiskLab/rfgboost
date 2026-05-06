@@ -38,13 +38,29 @@ impl RandomForestRegressor {
         Self { n_estimators, max_depth, max_features, bootstrap, random_state, min_samples_split, min_samples_leaf, trees: Vec::new(), is_fitted: false }
     }
 
-    fn fit(&mut self, x: PyReadonlyArray2<f64>, y: PyReadonlyArray1<f64>) -> PyResult<()> {
+    #[pyo3(signature = (x, y, sample_weight=None))]
+    fn fit(
+        &mut self,
+        x: PyReadonlyArray2<f64>,
+        y: PyReadonlyArray1<f64>,
+        sample_weight: Option<PyReadonlyArray1<f64>>,
+    ) -> PyResult<()> {
         let x_arr = x.as_array();
         let y_vec: Vec<f64> = y.as_array().to_vec();
+        crate::tree::validate_finite(&x_arr.view(), &y_vec)
+            .map_err(PyValueError::new_err)?;
         let n_samples = x_arr.nrows();
         let n_features = x_arr.ncols();
+        let weights: Vec<f64> = match sample_weight {
+            Some(arr) => {
+                let v: Vec<f64> = arr.as_array().to_vec();
+                crate::tree::validate_weights(&v, n_samples).map_err(PyValueError::new_err)?;
+                v
+            }
+            None => vec![1.0; n_samples],
+        };
         let max_feat = resolve_max_features(&self.max_features, n_features);
-        let mut rng = Pcg64::seed_from_u64(self.random_state.unwrap_or(42));
+        let mut rng = crate::tree::seed_rng(self.random_state);
 
         let config = TreeConfig {
             max_depth: self.max_depth, min_samples_split: self.min_samples_split,
@@ -66,7 +82,7 @@ impl RandomForestRegressor {
             .into_par_iter()
             .map(|(boot, seed)| {
                 let mut tree_rng = Pcg64::seed_from_u64(seed);
-                build_tree_on_bootstrap(&x_owned.view(), &y_vec, &boot, &config, &mut tree_rng, &global_hist)
+                build_tree_on_bootstrap(&x_owned.view(), &y_vec, &weights, &boot, &config, &mut tree_rng, &global_hist)
             })
             .collect();
 
@@ -99,7 +115,7 @@ impl RandomForestRegressor {
 }
 
 #[pyclass]
-pub struct RandomForest {
+pub struct RandomForestClassifier {
     n_estimators: usize,
     max_depth: Option<usize>,
     max_features: Option<String>,
@@ -114,7 +130,7 @@ pub struct RandomForest {
 }
 
 #[pymethods]
-impl RandomForest {
+impl RandomForestClassifier {
     #[new]
     #[pyo3(signature = (
         n_estimators=100, max_depth=None, max_features=None,
@@ -127,11 +143,27 @@ impl RandomForest {
         Self { n_estimators, max_depth, max_features, bootstrap, random_state, min_samples_split, min_samples_leaf, trees: Vec::new(), n_classes: 0, classes_: None, is_fitted: false }
     }
 
-    fn fit(&mut self, x: PyReadonlyArray2<f64>, y: PyReadonlyArray1<f64>) -> PyResult<()> {
+    #[pyo3(signature = (x, y, sample_weight=None))]
+    fn fit(
+        &mut self,
+        x: PyReadonlyArray2<f64>,
+        y: PyReadonlyArray1<f64>,
+        sample_weight: Option<PyReadonlyArray1<f64>>,
+    ) -> PyResult<()> {
         let x_arr = x.as_array();
         let y_vec: Vec<f64> = y.as_array().to_vec();
+        crate::tree::validate_finite(&x_arr.view(), &y_vec)
+            .map_err(PyValueError::new_err)?;
         let n_samples = x_arr.nrows();
         let n_features = x_arr.ncols();
+        let weights: Vec<f64> = match sample_weight {
+            Some(arr) => {
+                let v: Vec<f64> = arr.as_array().to_vec();
+                crate::tree::validate_weights(&v, n_samples).map_err(PyValueError::new_err)?;
+                v
+            }
+            None => vec![1.0; n_samples],
+        };
 
         let mut classes: Vec<usize> = y_vec.iter().map(|&v| v as usize).collect();
         classes.sort();
@@ -140,7 +172,7 @@ impl RandomForest {
         self.n_classes = classes.len();
 
         let max_feat = resolve_max_features(&self.max_features, n_features);
-        let mut rng = Pcg64::seed_from_u64(self.random_state.unwrap_or(42));
+        let mut rng = crate::tree::seed_rng(self.random_state);
 
         let config = TreeConfig {
             max_depth: self.max_depth, min_samples_split: self.min_samples_split,
@@ -162,7 +194,7 @@ impl RandomForest {
             .into_par_iter()
             .map(|(boot, seed)| {
                 let mut tree_rng = Pcg64::seed_from_u64(seed);
-                build_tree_on_bootstrap(&x_owned.view(), &y_vec, &boot, &config, &mut tree_rng, &global_hist)
+                build_tree_on_bootstrap(&x_owned.view(), &y_vec, &weights, &boot, &config, &mut tree_rng, &global_hist)
             })
             .collect();
 
@@ -171,7 +203,7 @@ impl RandomForest {
     }
 
     fn predict(&self, x: PyReadonlyArray2<f64>) -> PyResult<Vec<f64>> {
-        if !self.is_fitted { return Err(PyValueError::new_err("RandomForest has not been fitted")); }
+        if !self.is_fitted { return Err(PyValueError::new_err("RandomForestClassifier has not been fitted")); }
         let proba = self.predict_proba(x)?;
         Ok(proba.iter().map(|p| {
             p.iter().enumerate()
@@ -181,7 +213,7 @@ impl RandomForest {
     }
 
     fn predict_proba(&self, x: PyReadonlyArray2<f64>) -> PyResult<Vec<Vec<f64>>> {
-        if !self.is_fitted { return Err(PyValueError::new_err("RandomForest has not been fitted")); }
+        if !self.is_fitted { return Err(PyValueError::new_err("RandomForestClassifier has not been fitted")); }
         let x_arr = x.as_array();
         let n_classes = self.n_classes;
         let n_trees = self.trees.len() as f64;

@@ -59,8 +59,9 @@ fn softmax(logits: &[f64]) -> Vec<f64> {
 // Internal fit helpers
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub fn fit_internal_rf(
-    x: &ArrayView2<f64>, y: &[f64], n_estimators: usize, config: &TreeConfig,
+    x: &ArrayView2<f64>, y: &[f64], w: &[f64], n_estimators: usize, config: &TreeConfig,
     bootstrap: bool, rng: &mut Pcg64, use_histogram: bool,
 ) -> InternalRF {
     let n_samples = x.nrows();
@@ -79,12 +80,12 @@ pub fn fit_internal_rf(
         let global_hist = HistogramData::build(&x_owned.view(), n_samples, n_features);
         tree_params.into_par_iter().map(|(boot, seed)| {
             let mut tree_rng = Pcg64::seed_from_u64(seed);
-            build_tree_on_bootstrap(&x_owned.view(), y, &boot, config, &mut tree_rng, &global_hist)
+            build_tree_on_bootstrap(&x_owned.view(), y, w, &boot, config, &mut tree_rng, &global_hist)
         }).collect()
     } else {
         tree_params.into_par_iter().map(|(boot, seed)| {
             let mut tree_rng = Pcg64::seed_from_u64(seed);
-            build_tree_on_bootstrap_exact(&x_owned.view(), y, &boot, config, &mut tree_rng)
+            build_tree_on_bootstrap_exact(&x_owned.view(), y, w, &boot, config, &mut tree_rng)
         }).collect()
     };
 
@@ -93,7 +94,7 @@ pub fn fit_internal_rf(
 
 #[allow(clippy::too_many_arguments)]
 pub fn fit_internal_rf_streaming(
-    x: &ArrayView2<f64>, y: &[f64], n_estimators: usize, config: &TreeConfig,
+    x: &ArrayView2<f64>, y: &[f64], w: &[f64], n_estimators: usize, config: &TreeConfig,
     bootstrap: bool, rng: &mut Pcg64, use_histogram: bool,
     tol: f64, min_trees: usize, is_classification: bool,
 ) -> (InternalRF, Vec<f64>) {
@@ -134,9 +135,9 @@ pub fn fit_internal_rf_streaming(
 
                 let mut tree_rng = Pcg64::seed_from_u64(seed);
                 let tree = if let Some(h) = hist_ref {
-                    build_tree_on_bootstrap(&x_ref.view(), y, boot, config_ref, &mut tree_rng, h)
+                    build_tree_on_bootstrap(&x_ref.view(), y, w, boot, config_ref, &mut tree_rng, h)
                 } else {
-                    build_tree_on_bootstrap_exact(&x_ref.view(), y, boot, config_ref, &mut tree_rng)
+                    build_tree_on_bootstrap_exact(&x_ref.view(), y, w, boot, config_ref, &mut tree_rng)
                 };
 
                 if converged.load(Ordering::Relaxed) { return; }
@@ -327,7 +328,7 @@ impl RFGBoostClassifier {
     #[new]
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
-        n_estimators=50, learning_rate=0.1, rf_n_estimators=50,
+        n_estimators=20, learning_rate=0.1, rf_n_estimators=20,
         rf_max_depth=None, rf_max_features=None, bootstrap=true,
         random_state=None, min_samples_split=2, min_samples_leaf=1,
         use_histogram=true, async_mode=false, tol=1e-4, n_jobs=None
@@ -349,13 +350,30 @@ impl RFGBoostClassifier {
         }
     }
 
-    fn fit(&mut self, x: PyReadonlyArray2<f64>, y: PyReadonlyArray1<f64>) -> PyResult<()> {
+    #[pyo3(signature = (x, y, sample_weight=None))]
+    fn fit(
+        &mut self,
+        x: PyReadonlyArray2<f64>,
+        y: PyReadonlyArray1<f64>,
+        sample_weight: Option<PyReadonlyArray1<f64>>,
+    ) -> PyResult<()> {
         let x_arr = x.as_array();
         let y_vec: Vec<f64> = y.as_array().to_vec();
+        crate::tree::validate_finite(&x_arr.view(), &y_vec)
+            .map_err(PyValueError::new_err)?;
         let n_samples = x_arr.nrows();
         let n_features = x_arr.ncols();
+        let weights: Vec<f64> = match sample_weight {
+            Some(arr) => {
+                let v: Vec<f64> = arr.as_array().to_vec();
+                crate::tree::validate_weights(&v, n_samples).map_err(PyValueError::new_err)?;
+                v
+            }
+            None => vec![1.0; n_samples],
+        };
+        let total_w: f64 = weights.iter().sum();
         let max_feat = resolve_max_features(&self.rf_max_features, n_features);
-        let mut rng = Pcg64::seed_from_u64(self.random_state.unwrap_or(42));
+        let mut rng = crate::tree::seed_rng(self.random_state);
 
         let config = TreeConfig {
             max_depth: self.rf_max_depth, min_samples_split: self.min_samples_split,
@@ -375,20 +393,28 @@ impl RFGBoostClassifier {
         self.trees_used.clear();
 
         if self.n_classes == 2 {
-            // Binary: single logit
-            let mean_y: f64 = y_vec.iter().sum::<f64>() / n_samples as f64;
+            // Binary: single logit. Weighted prior.
+            let mean_y: f64 = if total_w > 0.0 {
+                (0..n_samples).map(|i| weights[i] * y_vec[i]).sum::<f64>() / total_w
+            } else { 0.5 };
             let clamped = mean_y.clamp(1e-5, 1.0 - 1e-5);
             self.initial_pred = vec![(clamped / (1.0 - clamped)).ln()];
 
             let mut pred = vec![self.initial_pred[0]; n_samples];
 
             for _ in 0..self.n_estimators {
-                let targets: Vec<f64> = (0..n_samples).map(|i| {
+                // Newton-weighted leaves: target = (y-p)/h, weight = user_w * h, where h = p(1-p).
+                // The weighted leaf mean reduces to Sum(g) / Sum(h), the Newton-optimal step.
+                let mut targets = vec![0.0; n_samples];
+                let mut newton_w = vec![0.0; n_samples];
+                for i in 0..n_samples {
                     let p = sigmoid(pred[i]).clamp(1e-5, 1.0 - 1e-5);
-                    (y_vec[i] - p) / (p * (1.0 - p))
-                }).collect();
+                    let h = p * (1.0 - p);
+                    targets[i] = (y_vec[i] - p) / h;
+                    newton_w[i] = weights[i] * h;
+                }
 
-                let (rf, update, n_used) = self.fit_one_rf(&x_owned, &targets, &config, &mut rng, min_trees, true);
+                let (rf, update, n_used) = self.fit_one_rf(&x_owned, &targets, &newton_w, &config, &mut rng, min_trees, true);
                 self.trees_used.push(n_used);
                 for i in 0..n_samples { pred[i] += self.learning_rate * update[i]; }
                 self.models.push(rf);
@@ -396,10 +422,10 @@ impl RFGBoostClassifier {
         } else {
             // Multiclass: one RF per class per round (one-vs-rest in logit space)
             self.initial_pred = vec![0.0; self.n_classes];
-            // Compute class priors
+            // Weighted class priors
             for c in 0..self.n_classes {
-                let count = y_vec.iter().filter(|&&v| v as usize == c).count() as f64;
-                let p = (count / n_samples as f64).clamp(1e-5, 1.0 - 1e-5);
+                let wc: f64 = (0..n_samples).filter(|&i| y_vec[i] as usize == c).map(|i| weights[i]).sum();
+                let p = if total_w > 0.0 { (wc / total_w).clamp(1e-5, 1.0 - 1e-5) } else { 1e-5 };
                 self.initial_pred[c] = p.ln(); // log-prior for softmax
             }
 
@@ -410,14 +436,20 @@ impl RFGBoostClassifier {
 
             for _ in 0..self.n_estimators {
                 for c in 0..self.n_classes {
-                    // Softmax gradient for class c
-                    let targets: Vec<f64> = (0..n_samples).map(|i| {
+                    // Newton-weighted leaves for softmax: target = (y_c - p_c)/h_c, weight = user_w * h_c,
+                    // where h_c = p_c * (1 - p_c). Weighted leaf mean = Sum(g_c) / Sum(h_c).
+                    let mut targets = vec![0.0; n_samples];
+                    let mut newton_w = vec![0.0; n_samples];
+                    for i in 0..n_samples {
                         let probs = softmax(&pred[i]);
+                        let p_c = probs[c].clamp(1e-5, 1.0 - 1e-5);
+                        let h_c = p_c * (1.0 - p_c);
                         let y_c = if y_vec[i] as usize == c { 1.0 } else { 0.0 };
-                        y_c - probs[c]
-                    }).collect();
+                        targets[i] = (y_c - p_c) / h_c;
+                        newton_w[i] = weights[i] * h_c;
+                    }
 
-                    let (rf, update, n_used) = self.fit_one_rf(&x_owned, &targets, &config, &mut rng, min_trees, true);
+                    let (rf, update, n_used) = self.fit_one_rf(&x_owned, &targets, &newton_w, &config, &mut rng, min_trees, true);
                     if c == 0 { self.trees_used.push(n_used); }
                     for i in 0..n_samples { pred[i][c] += self.learning_rate * update[i]; }
                     self.models.push(rf);
@@ -516,20 +548,21 @@ impl RFGBoostClassifier {
 }
 
 impl RFGBoostClassifier {
+    #[allow(clippy::too_many_arguments)]
     fn fit_one_rf(
-        &self, x: &ndarray::Array2<f64>, targets: &[f64], config: &TreeConfig,
+        &self, x: &ndarray::Array2<f64>, targets: &[f64], weights: &[f64], config: &TreeConfig,
         rng: &mut Pcg64, min_trees: usize, is_clf: bool,
     ) -> (InternalRF, Vec<f64>, usize) {
         if self.async_mode {
             let (rf, update) = fit_internal_rf_streaming(
-                &x.view(), targets, self.rf_n_estimators, config,
+                &x.view(), targets, weights, self.rf_n_estimators, config,
                 self.bootstrap, rng, self.use_histogram, self.tol, min_trees, is_clf,
             );
             let n = rf.trees.len();
             (rf, update, n)
         } else {
             let rf = fit_internal_rf(
-                &x.view(), targets, self.rf_n_estimators, config,
+                &x.view(), targets, weights, self.rf_n_estimators, config,
                 self.bootstrap, rng, self.use_histogram,
             );
             let update = rf.predict_all(&x.view());
@@ -572,7 +605,7 @@ impl RFGBoostRegressor {
     #[new]
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
-        n_estimators=50, learning_rate=0.1, rf_n_estimators=50,
+        n_estimators=20, learning_rate=0.1, rf_n_estimators=20,
         rf_max_depth=None, rf_max_features=None, bootstrap=true,
         random_state=None, min_samples_split=2, min_samples_leaf=1,
         use_histogram=true, async_mode=false, tol=1e-4, n_jobs=None,
@@ -597,13 +630,29 @@ impl RFGBoostRegressor {
         }
     }
 
-    fn fit(&mut self, x: PyReadonlyArray2<f64>, y: PyReadonlyArray1<f64>) -> PyResult<()> {
+    #[pyo3(signature = (x, y, sample_weight=None))]
+    fn fit(
+        &mut self,
+        x: PyReadonlyArray2<f64>,
+        y: PyReadonlyArray1<f64>,
+        sample_weight: Option<PyReadonlyArray1<f64>>,
+    ) -> PyResult<()> {
         let x_arr = x.as_array();
         let y_vec: Vec<f64> = y.as_array().to_vec();
+        crate::tree::validate_finite(&x_arr.view(), &y_vec)
+            .map_err(PyValueError::new_err)?;
         let n_total = x_arr.nrows();
         let n_features = x_arr.ncols();
+        let weights_full: Vec<f64> = match sample_weight {
+            Some(arr) => {
+                let v: Vec<f64> = arr.as_array().to_vec();
+                crate::tree::validate_weights(&v, n_total).map_err(PyValueError::new_err)?;
+                v
+            }
+            None => vec![1.0; n_total],
+        };
         let max_feat = resolve_max_features(&self.rf_max_features, n_features);
-        let mut rng = Pcg64::seed_from_u64(self.random_state.unwrap_or(42));
+        let mut rng = crate::tree::seed_rng(self.random_state);
 
         // Split into train and calibration sets for conformal prediction
         let n_cal = ((n_total as f64) * self.conformal_fraction) as usize;
@@ -616,12 +665,15 @@ impl RFGBoostRegressor {
         // Extract train data
         let mut x_train = ndarray::Array2::zeros((n_train, n_features));
         let mut y_train = vec![0.0; n_train];
+        let mut w_train = vec![0.0; n_train];
         for (new_i, &old_i) in train_idx.iter().enumerate() {
             y_train[new_i] = y_vec[old_i];
+            w_train[new_i] = weights_full[old_i];
             for j in 0..n_features {
                 x_train[[new_i, j]] = x_arr[[old_i, j]];
             }
         }
+        let total_w_train: f64 = w_train.iter().sum();
 
         let config = TreeConfig {
             max_depth: self.rf_max_depth, min_samples_split: self.min_samples_split,
@@ -629,7 +681,9 @@ impl RFGBoostRegressor {
             max_features: if max_feat < n_features { Some(max_feat) } else { None },
         };
 
-        self.initial_pred = y_train.iter().sum::<f64>() / n_train as f64;
+        self.initial_pred = if total_w_train > 0.0 {
+            (0..n_train).map(|i| w_train[i] * y_train[i]).sum::<f64>() / total_w_train
+        } else { 0.0 };
         let mut pred = vec![self.initial_pred; n_train];
         self.models.clear();
         self.trees_used.clear();
@@ -642,7 +696,7 @@ impl RFGBoostRegressor {
 
             if self.async_mode {
                 let (rf, update) = fit_internal_rf_streaming(
-                    &x_train.view(), &targets, self.rf_n_estimators, &config,
+                    &x_train.view(), &targets, &w_train, self.rf_n_estimators, &config,
                     self.bootstrap, &mut rng, self.use_histogram, self.tol, min_trees, false,
                 );
                 self.trees_used.push(rf.trees.len());
@@ -650,7 +704,7 @@ impl RFGBoostRegressor {
                 self.models.push(rf);
             } else {
                 let rf = fit_internal_rf(
-                    &x_train.view(), &targets, self.rf_n_estimators, &config,
+                    &x_train.view(), &targets, &w_train, self.rf_n_estimators, &config,
                     self.bootstrap, &mut rng, self.use_histogram,
                 );
                 let update = rf.predict_all(&x_train.view());
@@ -683,20 +737,23 @@ impl RFGBoostRegressor {
         self.conformal_quantile = cal_scores[q_idx];
 
         // Now retrain on ALL data for the final model
-        self.initial_pred = y_vec.iter().sum::<f64>() / n_total as f64;
+        let total_w_full: f64 = weights_full.iter().sum();
+        self.initial_pred = if total_w_full > 0.0 {
+            (0..n_total).map(|i| weights_full[i] * y_vec[i]).sum::<f64>() / total_w_full
+        } else { 0.0 };
         let mut pred_full = vec![self.initial_pred; n_total];
         self.models.clear();
         self.trees_used.clear();
 
         let x_full = x_arr.to_owned();
-        let mut rng2 = Pcg64::seed_from_u64(self.random_state.unwrap_or(42));
+        let mut rng2 = crate::tree::seed_rng(self.random_state);
 
         for _ in 0..self.n_estimators {
             let targets: Vec<f64> = (0..n_total).map(|i| y_vec[i] - pred_full[i]).collect();
 
             if self.async_mode {
                 let (rf, update) = fit_internal_rf_streaming(
-                    &x_full.view(), &targets, self.rf_n_estimators, &config,
+                    &x_full.view(), &targets, &weights_full, self.rf_n_estimators, &config,
                     self.bootstrap, &mut rng2, self.use_histogram, self.tol, min_trees, false,
                 );
                 self.trees_used.push(rf.trees.len());
@@ -704,7 +761,7 @@ impl RFGBoostRegressor {
                 self.models.push(rf);
             } else {
                 let rf = fit_internal_rf(
-                    &x_full.view(), &targets, self.rf_n_estimators, &config,
+                    &x_full.view(), &targets, &weights_full, self.rf_n_estimators, &config,
                     self.bootstrap, &mut rng2, self.use_histogram,
                 );
                 let update = rf.predict_all(&x_full.view());
@@ -789,7 +846,7 @@ impl RFGBoost {
     #[new]
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
-        n_estimators=50, learning_rate=0.1, rf_n_estimators=50,
+        n_estimators=20, learning_rate=0.1, rf_n_estimators=20,
         rf_max_depth=None, rf_max_features=None, bootstrap=true,
         random_state=None, min_samples_split=2, min_samples_leaf=1,
         task="classification", use_histogram=true, async_mode=false, tol=1e-4, n_jobs=None
@@ -824,9 +881,15 @@ impl RFGBoost {
         }
     }
 
-    fn fit(&mut self, x: PyReadonlyArray2<f64>, y: PyReadonlyArray1<f64>) -> PyResult<()> {
-        if let Some(clf) = &mut self.clf { clf.fit(x, y) }
-        else if let Some(reg) = &mut self.reg { reg.fit(x, y) }
+    #[pyo3(signature = (x, y, sample_weight=None))]
+    fn fit(
+        &mut self,
+        x: PyReadonlyArray2<f64>,
+        y: PyReadonlyArray1<f64>,
+        sample_weight: Option<PyReadonlyArray1<f64>>,
+    ) -> PyResult<()> {
+        if let Some(clf) = &mut self.clf { clf.fit(x, y, sample_weight) }
+        else if let Some(reg) = &mut self.reg { reg.fit(x, y, sample_weight) }
         else { Err(PyValueError::new_err("Invalid state")) }
     }
 

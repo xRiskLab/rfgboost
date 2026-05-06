@@ -36,10 +36,10 @@ impl TreeSHAP {
                 let value = if self.model_type == "classification" {
                     let mut probs = vec![0.0; self.n_classes];
                     if let Some(counts) = &n.class_counts {
-                        let total: usize = counts.values().sum();
-                        if total > 0 {
+                        let total: f64 = counts.values().sum();
+                        if total > 0.0 {
                             for (&cls, &cnt) in counts {
-                                if cls < self.n_classes { probs[cls] = cnt as f64 / total as f64; }
+                                if cls < self.n_classes { probs[cls] = cnt / total; }
                             }
                         }
                     }

@@ -9,7 +9,7 @@ mod unsupervised;
 use pyo3::prelude::*;
 
 use decision_tree::DecisionTree;
-use random_forest::{RandomForest, RandomForestRegressor};
+use random_forest::{RandomForestClassifier, RandomForestRegressor};
 use tree_shap::TreeSHAP;
 use boosting::{RFGBoost, RFGBoostClassifier, RFGBoostRegressor};
 use unsupervised::RandomForestUnsupervised;
@@ -19,7 +19,7 @@ fn _rs(_py: Python, m: &PyModule) -> PyResult<()> {
     // Module name must match pyproject.toml module-name last segment
     m.add_class::<DecisionTree>()?;
     m.add_class::<RandomForestRegressor>()?;
-    m.add_class::<RandomForest>()?;
+    m.add_class::<RandomForestClassifier>()?;
     m.add_class::<TreeSHAP>()?;
     m.add_class::<RFGBoost>()?;
     m.add_class::<RFGBoostClassifier>()?;
