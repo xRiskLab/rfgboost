@@ -53,9 +53,7 @@ def test_uniform_weights_match_no_weights_rf_clf():
     a.fit(X, y)
     b = RandomForestClassifier(n_estimators=10, max_depth=4, random_state=42)
     b.fit(X, y, sample_weight=np.ones(len(y)))
-    np.testing.assert_allclose(
-        np.asarray(a.predict_proba(X)), np.asarray(b.predict_proba(X))
-    )
+    np.testing.assert_allclose(np.asarray(a.predict_proba(X)), np.asarray(b.predict_proba(X)))
 
 
 def test_uniform_weights_match_no_weights_rf_reg():
@@ -73,9 +71,7 @@ def test_uniform_weights_match_no_weights_rfgboost_clf():
     a.fit(X, y)
     b = RFGBoostClassifier(n_estimators=5, rf_n_estimators=8, rf_max_depth=4, random_state=42)
     b.fit(X, y, sample_weight=np.ones(len(y)))
-    np.testing.assert_allclose(
-        np.asarray(a.predict_proba(X)), np.asarray(b.predict_proba(X))
-    )
+    np.testing.assert_allclose(np.asarray(a.predict_proba(X)), np.asarray(b.predict_proba(X)))
 
 
 def test_uniform_weights_match_no_weights_rfgboost_reg():
@@ -168,9 +164,12 @@ def test_newton_leaf_matches_closed_form_uniform(use_histogram):
     w = np.ones(n)
 
     clf = RFGBoostClassifier(
-        n_estimators=1, learning_rate=1.0,
-        rf_n_estimators=1, bootstrap=False,
-        use_histogram=use_histogram, random_state=0,
+        n_estimators=1,
+        learning_rate=1.0,
+        rf_n_estimators=1,
+        bootstrap=False,
+        use_histogram=use_histogram,
+        random_state=0,
     )
     clf.fit(X, y, sample_weight=w)
     p_pred = np.asarray(clf.predict_proba(X))[:, 1]
@@ -192,9 +191,12 @@ def test_newton_leaf_matches_closed_form_weighted(use_histogram):
     w = rng.uniform(0.5, 5.0, size=n)  # non-uniform weights
 
     clf = RFGBoostClassifier(
-        n_estimators=1, learning_rate=1.0,
-        rf_n_estimators=1, bootstrap=False,
-        use_histogram=use_histogram, random_state=0,
+        n_estimators=1,
+        learning_rate=1.0,
+        rf_n_estimators=1,
+        bootstrap=False,
+        use_histogram=use_histogram,
+        random_state=0,
     )
     clf.fit(X, y, sample_weight=w)
     p_pred = np.asarray(clf.predict_proba(X))[:, 1]
@@ -216,15 +218,17 @@ def test_newton_step_uses_weighted_hessian_not_just_weighted_gradient():
 
     # Baseline: uniform
     w1 = np.ones(n)
-    a = RFGBoostClassifier(n_estimators=1, learning_rate=1.0, rf_n_estimators=1,
-                           bootstrap=False, random_state=0)
+    a = RFGBoostClassifier(
+        n_estimators=1, learning_rate=1.0, rf_n_estimators=1, bootstrap=False, random_state=0
+    )
     a.fit(X, y, sample_weight=w1)
     logit_a = np.log(a.predict_proba(X)[0, 1] / (1.0 - a.predict_proba(X)[0, 1]))
 
     # Uniform×2 — should give the SAME leaf value (scaling invariance)
     w2 = 2.0 * np.ones(n)
-    b = RFGBoostClassifier(n_estimators=1, learning_rate=1.0, rf_n_estimators=1,
-                           bootstrap=False, random_state=0)
+    b = RFGBoostClassifier(
+        n_estimators=1, learning_rate=1.0, rf_n_estimators=1, bootstrap=False, random_state=0
+    )
     b.fit(X, y, sample_weight=w2)
     logit_b = np.log(b.predict_proba(X)[0, 1] / (1.0 - b.predict_proba(X)[0, 1]))
 
@@ -247,7 +251,9 @@ def test_class_imbalance_reweighting_shifts_predictions():
     p_base = np.asarray(base.predict_proba(X))[:, 1].mean()
 
     w = np.where(y == 1, 12.0, 1.0)  # boost minority
-    weighted = RFGBoostClassifier(n_estimators=8, rf_n_estimators=10, rf_max_depth=4, random_state=0)
+    weighted = RFGBoostClassifier(
+        n_estimators=8, rf_n_estimators=10, rf_max_depth=4, random_state=0
+    )
     weighted.fit(X, y, sample_weight=w)
     p_weighted = np.asarray(weighted.predict_proba(X))[:, 1].mean()
 
