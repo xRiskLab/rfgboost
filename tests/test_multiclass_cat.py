@@ -33,8 +33,11 @@ def test_multiclass_with_cat_features():
     X, y = _make_mixed_multiclass(n=600, n_classes=4)
     Xtr, Xte, ytr, yte = train_test_split(X, y, random_state=0, stratify=y)
     clf = RFGBoostClassifier(
-        n_estimators=10, rf_n_estimators=20, rf_max_depth=4,
-        random_state=42, cat_features=[4, 5],
+        n_estimators=10,
+        rf_n_estimators=20,
+        rf_max_depth=4,
+        random_state=42,
+        cat_features=[4, 5],
     )
     clf.fit(Xtr, ytr)
     assert clf.n_classes_ == 4
@@ -52,8 +55,11 @@ def test_binary_with_cat_features_unchanged():
     y = (y_mc < 2).astype(float)
     Xtr, Xte, ytr, yte = train_test_split(X, y, random_state=0, stratify=y)
     clf = RFGBoostClassifier(
-        n_estimators=8, rf_n_estimators=15, rf_max_depth=4,
-        random_state=42, cat_features=[4, 5],
+        n_estimators=8,
+        rf_n_estimators=15,
+        rf_max_depth=4,
+        random_state=42,
+        cat_features=[4, 5],
     )
     clf.fit(Xtr, ytr)
     assert clf.n_classes_ == 2
@@ -70,8 +76,11 @@ def test_multiclass_with_sample_weight():
     sw = np.ones(len(y))
     sw[y == 0] = 3.0
     clf = RFGBoostClassifier(
-        n_estimators=5, rf_n_estimators=10, rf_max_depth=3,
-        random_state=0, cat_features=[4, 5],
+        n_estimators=5,
+        rf_n_estimators=10,
+        rf_max_depth=3,
+        random_state=0,
+        cat_features=[4, 5],
     )
     clf.fit(X, y, sample_weight=sw)
     assert clf.n_classes_ == 3

@@ -181,7 +181,9 @@ class RFGBoostClassifier(ClassifierMixin, BaseEstimator):  # type: ignore[misc]
         if self.cat_features and self._woe is not None:
             return np.ascontiguousarray(
                 _encode_woe(
-                    self._woe, X, self.cat_features,
+                    self._woe,
+                    X,
+                    self.cat_features,
                     multiclass=getattr(self, "_woe_multiclass", False),
                 ),
                 dtype=np.float64,
