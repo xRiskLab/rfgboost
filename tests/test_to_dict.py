@@ -23,7 +23,7 @@ def _traverse(tree: dict, x: np.ndarray) -> float:
 
 
 def _predict_raw(d: dict, X: np.ndarray) -> np.ndarray:
-    n, n_out = X.shape[0], d["n_outputs"]
+    n = X.shape[0]
     raw = np.tile(np.asarray(d["init"], dtype=np.float64), (n, 1))
     lr = d["learning_rate"]
     for rnd in d["rounds"]:
