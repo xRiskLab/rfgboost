@@ -2,6 +2,7 @@ use ndarray::ArrayView2;
 use numpy::{PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
 use rand::prelude::*;
 use rand_pcg::Pcg64;
 use rayon::prelude::*;
@@ -13,6 +14,89 @@ use crate::tree::{
     build_tree_on_bootstrap, build_tree_on_bootstrap_exact, resolve_max_features, traverse,
     TreeConfig, TreeNode,
 };
+
+// ---------------------------------------------------------------------------
+// Tree serialization for external compressors / cross-language inference.
+// Emits sklearn-style flat parallel arrays per tree.
+// Leaf rows: feature=-1, threshold=NaN, children_left=children_right=-1.
+// ---------------------------------------------------------------------------
+
+fn flatten_tree(
+    node: &TreeNode,
+    children_left: &mut Vec<i64>,
+    children_right: &mut Vec<i64>,
+    feature: &mut Vec<i64>,
+    threshold: &mut Vec<f64>,
+    value: &mut Vec<f64>,
+) -> i64 {
+    let my_idx = children_left.len() as i64;
+    children_left.push(-1);
+    children_right.push(-1);
+    feature.push(-1);
+    threshold.push(f64::NAN);
+    value.push(node.value);
+
+    match (&node.left, &node.right) {
+        (Some(l), Some(r)) => {
+            feature[my_idx as usize] = node.feature as i64;
+            threshold[my_idx as usize] = node.threshold;
+            let li = flatten_tree(l, children_left, children_right, feature, threshold, value);
+            let ri = flatten_tree(r, children_left, children_right, feature, threshold, value);
+            children_left[my_idx as usize] = li;
+            children_right[my_idx as usize] = ri;
+        }
+        (None, None) => {}
+        _ => debug_assert!(false, "TreeNode invariant violated: half-internal node"),
+    }
+    my_idx
+}
+
+fn tree_to_pydict(py: Python<'_>, root: &TreeNode) -> PyResult<Py<PyDict>> {
+    let mut cl = Vec::new();
+    let mut cr = Vec::new();
+    let mut feat = Vec::new();
+    let mut thr = Vec::new();
+    let mut val = Vec::new();
+    flatten_tree(root, &mut cl, &mut cr, &mut feat, &mut thr, &mut val);
+
+    let d = PyDict::new(py);
+    d.set_item("children_left", cl)?;
+    d.set_item("children_right", cr)?;
+    d.set_item("feature", feat)?;
+    d.set_item("threshold", thr)?;
+    d.set_item("value", val)?;
+    Ok(d.into())
+}
+
+fn build_rounds(py: Python<'_>, models: &[InternalRF], n_outputs: usize) -> PyResult<Py<PyList>> {
+    debug_assert!(n_outputs > 0, "n_outputs must be positive");
+    debug_assert_eq!(
+        models.len() % n_outputs,
+        0,
+        "models.len() ({}) must be a multiple of n_outputs ({})",
+        models.len(),
+        n_outputs,
+    );
+    let rounds = PyList::empty(py);
+    let n_rounds = models.len() / n_outputs;
+    for r in 0..n_rounds {
+        let outputs = PyList::empty(py);
+        for o in 0..n_outputs {
+            let rf = &models[r * n_outputs + o];
+            let trees = PyList::empty(py);
+            for tree in &rf.trees {
+                trees.append(tree_to_pydict(py, tree)?)?;
+            }
+            let out_dict = PyDict::new(py);
+            out_dict.set_item("trees", trees)?;
+            outputs.append(out_dict)?;
+        }
+        let round_dict = PyDict::new(py);
+        round_dict.set_item("outputs", outputs)?;
+        rounds.append(round_dict)?;
+    }
+    Ok(rounds.into())
+}
 
 pub struct InternalRF {
     pub trees: Vec<TreeNode>,
@@ -545,6 +629,26 @@ impl RFGBoostClassifier {
     #[getter] fn n_classes(&self) -> usize { self.n_classes }
     #[getter] fn is_fitted(&self) -> bool { self.is_fitted }
     #[getter] fn trees_used(&self) -> Vec<usize> { self.trees_used.clone() }
+
+    fn to_dict(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        if !self.is_fitted {
+            return Err(PyValueError::new_err("RFGBoostClassifier has not been fitted"));
+        }
+        let n_outputs = self.initial_pred.len();
+        let task = if n_outputs == 1 { "binary" } else { "multiclass" };
+        let n_estimators_fit = self.models.len() / n_outputs;
+        let rounds = build_rounds(py, &self.models, n_outputs)?;
+
+        let d = PyDict::new(py);
+        d.set_item("task", task)?;
+        d.set_item("n_outputs", n_outputs)?;
+        d.set_item("n_classes", self.n_classes)?;
+        d.set_item("learning_rate", self.learning_rate)?;
+        d.set_item("init", self.initial_pred.clone())?;
+        d.set_item("n_estimators", n_estimators_fit)?;
+        d.set_item("rounds", rounds)?;
+        Ok(d.into())
+    }
 }
 
 impl RFGBoostClassifier {
@@ -828,6 +932,25 @@ impl RFGBoostRegressor {
     #[getter] fn n_estimators(&self) -> usize { self.n_estimators }
     #[getter] fn is_fitted(&self) -> bool { self.is_fitted }
     #[getter] fn trees_used(&self) -> Vec<usize> { self.trees_used.clone() }
+
+    fn to_dict(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        if !self.is_fitted {
+            return Err(PyValueError::new_err("RFGBoostRegressor has not been fitted"));
+        }
+        let n_outputs = 1;
+        let n_estimators_fit = self.models.len();
+        let rounds = build_rounds(py, &self.models, n_outputs)?;
+
+        let d = PyDict::new(py);
+        d.set_item("task", "regression")?;
+        d.set_item("n_outputs", n_outputs)?;
+        d.set_item("learning_rate", self.learning_rate)?;
+        d.set_item("init", vec![self.initial_pred])?;
+        d.set_item("n_estimators", n_estimators_fit)?;
+        d.set_item("conformal_quantile", self.conformal_quantile)?;
+        d.set_item("rounds", rounds)?;
+        Ok(d.into())
+    }
 }
 
 // ---------------------------------------------------------------------------

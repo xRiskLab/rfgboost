@@ -24,6 +24,45 @@ def _to_cat_rows(X: ArrayLike, cat_indices: Iterable[int]) -> list[list[str]]:
     return [[str(arr[i, c]) for c in indices] for i in range(n)]
 
 
+def _woe_bundle(
+    woe_encoder: Any,
+    cat_features: list[int],
+    n_total_features: int,
+    multiclass: bool,
+    n_classes: int,
+) -> dict[str, Any]:
+    """Serialize fitted FastWoe state into JSON-friendly lookup tables.
+
+    Layout matches `_encode_woe`: WOE columns first (in cat_features order;
+    one column per class for multiclass, one per feature for binary), then
+    numeric columns in their original index order.
+    """
+    cat_set = set(cat_features)
+    numeric_features = [i for i in range(n_total_features) if i not in cat_set]
+    bundle: dict[str, Any] = {
+        "cat_features": list(cat_features),
+        "numeric_features": numeric_features,
+        "woe_multiclass": multiclass,
+    }
+
+    tables: list[Any] = []
+    if multiclass:
+        bundle["n_woe_classes"] = n_classes
+        for i, _ in enumerate(cat_features):
+            per_class: list[dict[str, float]] = []
+            for c in range(n_classes):
+                rows = woe_encoder.get_feature_mapping_multiclass(c, f"feature_{i}")
+                per_class.append({str(r.category): float(r.woe) for r in rows})
+            tables.append(per_class)
+    else:
+        for i, _ in enumerate(cat_features):
+            rows = woe_encoder.get_feature_mapping(f"feature_{i}")
+            tables.append({str(r.category): float(r.woe) for r in rows})
+
+    bundle["woe_tables"] = tables
+    return bundle
+
+
 def _encode_woe(
     woe_encoder: Any,
     X: ArrayLike,
@@ -177,6 +216,32 @@ class RFGBoostClassifier(ClassifierMixin, BaseEstimator):  # type: ignore[misc]
             raise ValueError("No categorical features were encoded with WOE")
         return self._woe.get_iv_analysis()
 
+    def to_dict(self, n_features: Optional[int] = None) -> dict[str, Any]:
+        """Serialize the fitted model to a JSON-friendly dict.
+
+        Includes WOE lookup tables when `cat_features` was used. The returned
+        structure can be dumped via `json.dump` after replacing NaN thresholds
+        if the consumer rejects them. `n_features` is required when
+        `cat_features` was used so the numeric-column ordering can be recovered.
+        """
+        if not getattr(self, "_model", None) or not self._model.is_fitted:
+            raise ValueError("RFGBoostClassifier has not been fitted")
+        d: dict[str, Any] = dict(self._model.to_dict())
+        if self.cat_features and self._woe is not None:
+            cat_features = list(self.cat_features)
+            if n_features is None:
+                raise ValueError(
+                    "n_features (original column count) is required when cat_features was used"
+                )
+            d["woe"] = _woe_bundle(
+                self._woe,
+                cat_features,
+                n_features,
+                multiclass=getattr(self, "_woe_multiclass", False),
+                n_classes=len(self.classes_),
+            )
+        return d
+
     def _prepare_X(self, X: ArrayLike) -> NDArray[np.float64]:
         if self.cat_features and self._woe is not None:
             return np.ascontiguousarray(
@@ -309,6 +374,31 @@ class RFGBoostRegressor(RegressorMixin, BaseEstimator):  # type: ignore[misc]
 
     def feature_importances(self) -> list[float]:
         return list(self._model.feature_importances())
+
+    def to_dict(self, n_features: Optional[int] = None) -> dict[str, Any]:
+        """Serialize the fitted model to a JSON-friendly dict.
+
+        WOE for regression uses median-binarized targets; if cat_features was
+        used, n_features (original column count) is required to recover the
+        numeric-column ordering.
+        """
+        if not getattr(self, "_model", None) or not self._model.is_fitted:
+            raise ValueError("RFGBoostRegressor has not been fitted")
+        d: dict[str, Any] = dict(self._model.to_dict())
+        if self.cat_features and self._woe is not None:
+            cat_features = list(self.cat_features)
+            if n_features is None:
+                raise ValueError(
+                    "n_features (original column count) is required when cat_features was used"
+                )
+            d["woe"] = _woe_bundle(
+                self._woe,
+                cat_features,
+                n_features,
+                multiclass=False,
+                n_classes=2,
+            )
+        return d
 
     def _prepare_X(self, X: ArrayLike) -> NDArray[np.float64]:
         if self.cat_features and self._woe is not None:
