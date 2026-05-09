@@ -37,16 +37,17 @@ def _woe_bundle(
     one column per class for multiclass, one per feature for binary), then
     numeric columns in their original index order.
     """
-    numeric_features = [i for i in range(n_total_features) if i not in cat_features]
+    cat_set = set(cat_features)
+    numeric_features = [i for i in range(n_total_features) if i not in cat_set]
     bundle: dict[str, Any] = {
         "cat_features": list(cat_features),
         "numeric_features": numeric_features,
-        "woe_multiclass": bool(multiclass),
+        "woe_multiclass": multiclass,
     }
 
     tables: list[Any] = []
     if multiclass:
-        bundle["n_woe_classes"] = int(n_classes)
+        bundle["n_woe_classes"] = n_classes
         for i, _ in enumerate(cat_features):
             per_class: list[dict[str, float]] = []
             for c in range(n_classes):
@@ -237,7 +238,7 @@ class RFGBoostClassifier(ClassifierMixin, BaseEstimator):  # type: ignore[misc]
                 cat_features,
                 n_features,
                 multiclass=getattr(self, "_woe_multiclass", False),
-                n_classes=int(len(self.classes_)),
+                n_classes=len(self.classes_),
             )
         return d
 

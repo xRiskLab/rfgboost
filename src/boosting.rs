@@ -36,13 +36,17 @@ fn flatten_tree(
     threshold.push(f64::NAN);
     value.push(node.value);
 
-    if let (Some(l), Some(r)) = (&node.left, &node.right) {
-        feature[my_idx as usize] = node.feature as i64;
-        threshold[my_idx as usize] = node.threshold;
-        let li = flatten_tree(l, children_left, children_right, feature, threshold, value);
-        let ri = flatten_tree(r, children_left, children_right, feature, threshold, value);
-        children_left[my_idx as usize] = li;
-        children_right[my_idx as usize] = ri;
+    match (&node.left, &node.right) {
+        (Some(l), Some(r)) => {
+            feature[my_idx as usize] = node.feature as i64;
+            threshold[my_idx as usize] = node.threshold;
+            let li = flatten_tree(l, children_left, children_right, feature, threshold, value);
+            let ri = flatten_tree(r, children_left, children_right, feature, threshold, value);
+            children_left[my_idx as usize] = li;
+            children_right[my_idx as usize] = ri;
+        }
+        (None, None) => {}
+        _ => debug_assert!(false, "TreeNode invariant violated: half-internal node"),
     }
     my_idx
 }
@@ -65,6 +69,14 @@ fn tree_to_pydict(py: Python<'_>, root: &TreeNode) -> PyResult<Py<PyDict>> {
 }
 
 fn build_rounds(py: Python<'_>, models: &[InternalRF], n_outputs: usize) -> PyResult<Py<PyList>> {
+    debug_assert!(n_outputs > 0, "n_outputs must be positive");
+    debug_assert_eq!(
+        models.len() % n_outputs,
+        0,
+        "models.len() ({}) must be a multiple of n_outputs ({})",
+        models.len(),
+        n_outputs,
+    );
     let rounds = PyList::empty(py);
     let n_rounds = models.len() / n_outputs;
     for r in 0..n_rounds {

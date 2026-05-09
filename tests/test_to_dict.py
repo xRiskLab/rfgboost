@@ -29,9 +29,7 @@ def _predict_raw(d: dict, X: np.ndarray) -> np.ndarray:
     for rnd in d["rounds"]:
         for o, out in enumerate(rnd["outputs"]):
             ts = out["trees"]
-            avgs = np.array(
-                [[_traverse(t, X[i]) for t in ts] for i in range(n)]
-            ).mean(axis=1)
+            avgs = np.array([[_traverse(t, X[i]) for t in ts] for i in range(n)]).mean(axis=1)
             raw[:, o] += lr * avgs
     return raw
 
@@ -77,8 +75,11 @@ def test_to_dict_binary_round_trip() -> None:
     Xt = rng.random((40, 4))
 
     m = RFGBoostClassifier(
-        n_estimators=5, learning_rate=0.1, rf_n_estimators=6,
-        rf_max_depth=4, random_state=42,
+        n_estimators=5,
+        learning_rate=0.1,
+        rf_n_estimators=6,
+        rf_max_depth=4,
+        random_state=42,
     ).fit(X, y)
 
     d = m.to_dict()
@@ -99,8 +100,11 @@ def test_to_dict_multiclass_round_trip() -> None:
     Xt = rng.random((40, 4))
 
     m = RFGBoostClassifier(
-        n_estimators=4, learning_rate=0.1, rf_n_estimators=5,
-        rf_max_depth=4, random_state=42,
+        n_estimators=4,
+        learning_rate=0.1,
+        rf_n_estimators=5,
+        rf_max_depth=4,
+        random_state=42,
     ).fit(X, y)
 
     d = m.to_dict()
@@ -120,8 +124,11 @@ def test_to_dict_regression_round_trip() -> None:
     Xt = rng.random((40, 4))
 
     m = RFGBoostRegressor(
-        n_estimators=5, learning_rate=0.1, rf_n_estimators=6,
-        rf_max_depth=4, random_state=42,
+        n_estimators=5,
+        learning_rate=0.1,
+        rf_n_estimators=6,
+        rf_max_depth=4,
+        random_state=42,
     ).fit(X, y)
 
     d = m.to_dict()
@@ -144,8 +151,12 @@ def test_to_dict_with_cat_features_binary() -> None:
     y = ((cat0 == "a").astype(float) + num0 > 0.8).astype(np.float64)
 
     m = RFGBoostClassifier(
-        n_estimators=4, learning_rate=0.1, rf_n_estimators=5,
-        rf_max_depth=4, random_state=42, cat_features=[0, 2],
+        n_estimators=4,
+        learning_rate=0.1,
+        rf_n_estimators=5,
+        rf_max_depth=4,
+        random_state=42,
+        cat_features=[0, 2],
     ).fit(X, y)
 
     d = m.to_dict(n_features=4)
@@ -172,8 +183,12 @@ def test_to_dict_with_cat_features_multiclass() -> None:
     y = (rng.choice([0, 1, 2], size=n)).astype(np.float64)
 
     m = RFGBoostClassifier(
-        n_estimators=3, learning_rate=0.1, rf_n_estimators=4,
-        rf_max_depth=3, random_state=42, cat_features=[0],
+        n_estimators=3,
+        learning_rate=0.1,
+        rf_n_estimators=4,
+        rf_max_depth=3,
+        random_state=42,
+        cat_features=[0],
     ).fit(X, y)
 
     d = m.to_dict(n_features=2)
