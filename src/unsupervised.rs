@@ -166,6 +166,7 @@ impl RandomForestUnsupervised {
             min_samples_leaf: self.min_samples_leaf,
             is_classification: true,
             max_features: if max_feat < n_features { Some(max_feat) } else { None },
+            monotone_constraints: Vec::new(),
         };
 
         // Pre-compute bootstrap params and track OOB for original samples

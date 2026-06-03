@@ -88,11 +88,13 @@ impl DecisionTree {
             min_samples_leaf: self.min_samples_leaf,
             is_classification: self.task == "classification",
             max_features: None,
+            monotone_constraints: Vec::new(),
         };
         let y_slice = y_arr.as_slice().unwrap();
         let indices: Vec<usize> = (0..n_samples).collect();
         let mut rng = crate::tree::seed_rng(self.random_state);
-        self.root = Some(build_node_exact(&x_arr.view(), y_slice, &weights, &indices, 0, &config, &mut rng));
+        self.root = Some(build_node_exact(&x_arr.view(), y_slice, &weights, &indices, 0, &config, &mut rng,
+                                          f64::NEG_INFINITY, f64::INFINITY));
         self.is_fitted = true;
         Ok(())
     }
