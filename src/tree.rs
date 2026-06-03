@@ -355,13 +355,9 @@ fn create_leaf(y: &[f64], w: &[f64], indices: &[usize], config: &TreeConfig, low
             class_counts: Some(counts),
         }
     } else {
-        let mut sw = 0.0_f64;
-        let mut swy = 0.0_f64;
-        for &i in indices {
-            sw += w[i];
-            swy += w[i] * y[i];
-        }
-        let mut value = if sw > 0.0 { swy / sw } else { 0.0 };
+        // Weighted mean of the leaf (shares the zero-weight fallback with
+        // weighted_mean used during split/bound computation).
+        let mut value = weighted_mean(y, w, indices);
         // Monotone value bounds: clamp into the interval propagated from
         // constrained ancestor splits (lower=-inf/upper=+inf when unconstrained).
         if value < lower { value = lower; }

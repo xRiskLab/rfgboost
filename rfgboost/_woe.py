@@ -162,14 +162,29 @@ class RFGBoostClassifier(ClassifierMixin, BaseEstimator):  # type: ignore[misc]
     def _encoded_monotone_list(self, n_features: int) -> Optional[list[int]]:
         """Translate {original_column_index: dir} to a per-feature list aligned
         to the encoded matrix order (WOE cat columns first in cat_features order,
-        then numeric columns in original index order). Binary only."""
+        then numeric columns in original index order). Binary only.
+
+        Validation happens here (at fit time, where n_features is known) rather
+        than in __init__, to keep the sklearn convention that __init__ stores
+        params verbatim. Keys must be valid column indices; direction values are
+        normalized to their sign so only {-1, 0, 1} reach the Rust core.
+        """
         if not self.monotone_constraints:
             return None
         cat = list(self.cat_features) if self.cat_features else []
         cat_set = set(cat)
         numeric = [i for i in range(n_features) if i not in cat_set]
         encoded_cols = cat + numeric  # original column index at each encoded position
-        return [int(self.monotone_constraints.get(orig, 0)) for orig in encoded_cols]
+
+        normalized: dict[int, int] = {}
+        for col, direction in self.monotone_constraints.items():
+            if not isinstance(col, (int, np.integer)) or not (0 <= int(col) < n_features):
+                raise ValueError(
+                    f"monotone_constraints key {col!r} is not a valid column index "
+                    f"in [0, {n_features})."
+                )
+            normalized[int(col)] = 1 if direction > 0 else -1 if direction < 0 else 0
+        return [normalized.get(orig, 0) for orig in encoded_cols]
 
     def fit(
         self,

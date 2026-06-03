@@ -70,6 +70,29 @@ def test_decreasing_constraint_holds():
         assert np.all(np.diff(path) <= 1e-9)
 
 
+def test_constraint_value_normalized_by_sign():
+    """Only the sign of a direction matters: {0: 5} behaves like {0: 1}."""
+    X, y = _ushaped_data()
+    p1 = np.array(
+        RFGBoostClassifier(**PARAMS, monotone_constraints={0: 1}).fit(X, y).predict_proba(X)
+    )[:, 1]
+    p5 = np.array(
+        RFGBoostClassifier(**PARAMS, monotone_constraints={0: 5}).fit(X, y).predict_proba(X)
+    )[:, 1]
+    assert np.allclose(p1, p5)
+
+
+def test_invalid_constraint_key_raises():
+    """A key that is not a valid column index fails fast at fit time."""
+    X, y = _ushaped_data()  # 3 features, so column 99 is out of range
+    raised = False
+    try:
+        RFGBoostClassifier(**PARAMS, monotone_constraints={99: 1}).fit(X, y)
+    except ValueError:
+        raised = True
+    assert raised
+
+
 def test_unconstrained_model_is_non_monotone():
     """Sanity: without the constraint the U-shaped data is non-monotone in
     feature 0, so the constraint tests above are not vacuous."""
