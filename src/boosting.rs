@@ -4,6 +4,11 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rand::prelude::*;
+// Pcg64 (128-bit) is unavailable on emscripten/wasm; Pcg32 has the same
+// SeedableRng/RngCore API, so alias it under the Pcg64 name there.
+#[cfg(target_os = "emscripten")]
+use rand_pcg::Pcg32 as Pcg64;
+#[cfg(not(target_os = "emscripten"))]
 use rand_pcg::Pcg64;
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

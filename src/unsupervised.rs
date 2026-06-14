@@ -3,6 +3,9 @@ use numpy::PyReadonlyArray2;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rand::prelude::*;
+#[cfg(target_os = "emscripten")]
+use rand_pcg::Pcg32 as Pcg64;
+#[cfg(not(target_os = "emscripten"))]
 use rand_pcg::Pcg64;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
