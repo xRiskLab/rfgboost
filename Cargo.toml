@@ -13,4 +13,8 @@ numpy = "0.19"
 ndarray = "0.15"
 rand = "0.8"
 rand_pcg = "0.3"
+
+# Pyodide/wasm is single-threaded; rayon is native-only and replaced by a
+# sequential shim on emscripten (see src/par.rs).
+[target.'cfg(not(target_os = "emscripten"))'.dependencies]
 rayon = "1.10"

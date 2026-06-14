@@ -7,7 +7,7 @@ use rand::prelude::*;
 use rand_pcg::Pcg32 as Pcg64;
 #[cfg(not(target_os = "emscripten"))]
 use rand_pcg::Pcg64;
-use rayon::prelude::*;
+use crate::par::*;
 use std::collections::{HashMap, HashSet};
 
 use crate::histogram::HistogramData;
@@ -110,7 +110,7 @@ impl RandomForestUnsupervised {
     ) -> Self {
         if let Some(nj) = n_jobs {
             if nj > 0 {
-                let _ = rayon::ThreadPoolBuilder::new().num_threads(nj).build_global();
+                let _ = ThreadPoolBuilder::new().num_threads(nj).build_global();
             }
         }
         Self {

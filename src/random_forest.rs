@@ -6,7 +6,7 @@ use rand::prelude::*;
 use rand_pcg::Pcg32 as Pcg64;
 #[cfg(not(target_os = "emscripten"))]
 use rand_pcg::Pcg64;
-use rayon::prelude::*;
+use crate::par::*;
 use std::collections::HashMap;
 
 use crate::histogram::HistogramData;
