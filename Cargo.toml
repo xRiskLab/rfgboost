@@ -8,7 +8,7 @@ name = "rfgboost_rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["extension-module", "gil-refs"] }
+pyo3 = { version = "0.22", features = ["extension-module", "gil-refs", "abi3-py39"] }
 numpy = "0.22"
 ndarray = "0.15"
 rand = "0.8"
