@@ -1,0 +1,88 @@
+name: Pyodide WASM wheel
+
+# Builds the browser (Pyodide / emscripten) wheel — the pyemscripten_*_wasm32
+# artifact that runs rfgboost in JupyterLite / PyScript. Reproduces the pinned
+# recipe; the emscripten and Rust-toolchain versions are derived from
+# pyodide-build so they cannot drift from the target ABI.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Also publish the wasm wheel to PyPI'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Pyodide (emscripten) wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Pinned so the target ABI (CPython 3.12 / emscripten 3.1.58) and the
+      # required Rust toolchain stay reproducible.
+      - name: Install pyodide-build
+        run: pip install "pyodide-build==0.35.1"
+
+      - name: Install cross-build environment
+        run: pyodide xbuildenv install
+
+      - name: Resolve pinned emscripten + rust toolchain
+        id: ver
+        run: |
+          echo "emscripten=$(pyodide config get emscripten_version)" >> "$GITHUB_OUTPUT"
+          echo "rust=$(pyodide config get rust_toolchain)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up emscripten ${{ steps.ver.outputs.emscripten }}
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ steps.ver.outputs.emscripten }}
+
+      - name: Set up Rust ${{ steps.ver.outputs.rust }}
+        run: |
+          rustup toolchain install "${{ steps.ver.outputs.rust }}" --profile minimal
+          rustup target add wasm32-unknown-emscripten --toolchain "${{ steps.ver.outputs.rust }}"
+          rustup override set "${{ steps.ver.outputs.rust }}"
+
+      - name: Build wasm wheel
+        run: pyodide build
+
+      - name: List wheels
+        run: ls -la dist/
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pyodide-wasm-wheel
+          path: dist/*.whl
+
+  publish:
+    name: Publish wasm wheel to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # Deliberately opt-in: tags only build + upload the artifact; publishing the
+    # wasm wheel to PyPI requires an explicit dispatch with publish=true.
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true'
+    steps:
+      - name: Download wheel artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pyodide-wasm-wheel
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
