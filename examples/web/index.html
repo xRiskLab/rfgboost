@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>rfgboost in the browser (WASM / Pyodide)</title>
+<style>
+  :root { font-family: Avenir, "Segoe UI", system-ui, sans-serif; }
+  body { max-width: 820px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  h1 { font-weight: 600; }
+  .muted { color: #666; }
+  button { font: inherit; padding: .55rem 1rem; border: 0; border-radius: 8px;
+           background: #1b9e4b; color: #fff; cursor: pointer; }
+  button:disabled { background: #9aa0a6; cursor: default; }
+  label { font-size: .95rem; }
+  pre { background: #f4f6f8; padding: 1rem; border-radius: 8px; overflow:auto;
+        white-space: pre-wrap; min-height: 3rem; }
+  .row { display:flex; gap:1rem; align-items:center; flex-wrap:wrap; margin:1rem 0; }
+  code { background:#eef1f4; padding:.1rem .3rem; border-radius:4px; }
+</style>
+</head>
+<body>
+<h1>rfgboost, trained in your browser</h1>
+<p class="muted">
+  Gradient boosting with random-forest base learners (Rust + PyO3), compiled to
+  WebAssembly and run via <a href="https://pyodide.org/">Pyodide</a> &mdash; no
+  server, no install. Categorical features are WOE-encoded by <code>fastwoe-rs</code>,
+  also compiled to WASM.
+</p>
+
+<div class="row">
+  <label>trees (n_estimators): <input id="n" type="number" value="20" min="2" max="100" style="width:5rem"></label>
+  <label><input id="cat" type="checkbox" checked> use a categorical feature (fastwoe-rs)</label>
+  <button id="run" disabled>Loading Pyodide&hellip;</button>
+</div>
+
+<pre id="out">Booting the WebAssembly runtime&hellip;</pre>
+
+<p class="muted" style="font-size:.85rem">
+  Pinned to Pyodide 0.27 to match the wheels' ABI (CPython 3.12 / emscripten 3.1.58).
+  Wheels are loaded locally from <code>./wheels/</code>.
+</p>
+
+<script type="module">
+import { loadPyodide } from "https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.mjs";
+
+const out = document.getElementById("out");
+const btn = document.getElementById("run");
+const log = (m) => { out.textContent += "\n" + m; };
+
+let py;
+(async () => {
+  out.textContent = "Loading Pyodide 0.27.7…";
+  py = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.27.7/full/" });
+  log("loading numpy, pandas, scikit-learn…");
+  await py.loadPackage(["micropip", "numpy", "pandas", "scikit-learn", "scipy"]);
+  log("installing rfgboost + fastwoe-rs (WASM wheels)…");
+  const micropip = py.pyimport("micropip");
+  await micropip.install.callKwargs(
+    ["./wheels/fastwoe_rs-0.1.11-cp39-abi3-pyodide_2024_0_wasm32.whl",
+     "./wheels/rfgboost-0.1.0-cp312-cp312-pyodide_2024_0_wasm32.whl"],
+    { deps: false });
+  log("ready — click Train.");
+  btn.disabled = false; btn.textContent = "Train rfgboost";
+})().catch((e) => log("ERROR: " + e));
+
+btn.addEventListener("click", async () => {
+  btn.disabled = true; out.textContent = "training…";
+  const n = parseInt(document.getElementById("n").value || "20", 10);
+  const useCat = document.getElementById("cat").checked;
+  py.globals.set("N_EST", n);
+  py.globals.set("USE_CAT", useCat);
+  try {
+    const res = await py.runPythonAsync(`
+import numpy as np, time, rfgboost
+rng = np.random.default_rng(0)
+n = 600
+num = rng.normal(size=(n, 4))
+if USE_CAT:
+    cat = rng.integers(0, 4, n).astype(float)
+    X = np.column_stack([cat, num]).astype(np.float64)
+    y = ((cat == 1) | (num[:, 0] > 0.4)).astype(np.float64)
+    kw = dict(cat_features=[0])
+else:
+    X = num.astype(np.float64)
+    y = (num[:, 0] + num[:, 1] - num[:, 2] > 0).astype(np.float64)
+    kw = {}
+t = time.time()
+m = rfgboost.RFGBoostClassifier(n_estimators=int(N_EST), rf_n_estimators=10,
+                                random_state=0, **kw)
+m.fit(X, y)
+acc = float((m.predict(X) == y).mean())
+mode = "numeric + categorical (fastwoe-rs)" if USE_CAT else "numeric only"
+f"trained {int(N_EST)} trees | {mode}\\ntrain accuracy = {acc:.3f} | {time.time()-t:.2f}s in WASM"
+`);
+    out.textContent = res;
+  } catch (e) {
+    out.textContent = "ERROR: " + e;
+  }
+  btn.disabled = false;
+});
+</script>
+</body>
+</html>

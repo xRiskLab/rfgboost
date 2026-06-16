@@ -21,6 +21,7 @@ keywords = [
 ]
 dependencies = [
     "numpy>=1.21.0",
+    "scikit-learn>=1.0.0",
     "fastwoe-rs>=0.1.0",
 ]
 classifiers = [
