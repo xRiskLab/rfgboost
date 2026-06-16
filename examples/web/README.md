@@ -24,7 +24,7 @@ Click **Train rfgboost**. Toggle the categorical checkbox to exercise the
 Serve `examples/web/` as a static site — everything it needs is in this folder:
 
 - `index.html` — the demo
-- `wheels/rfgboost-0.1.0-cp312-cp312-pyodide_2024_0_wasm32.whl`
+- `wheels/rfgboost-0.1.1-cp312-cp312-pyodide_2024_0_wasm32.whl`
 - `wheels/fastwoe_rs-0.1.11-cp39-abi3-pyodide_2024_0_wasm32.whl`
 
 ## Version pinning (important)

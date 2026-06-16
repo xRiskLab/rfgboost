@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rfgboost"
-version = "0.1.0"
+version = "0.1.1"
 description = "RFGBoost: async Random Forest + gradient boosting engine in Rust with CI-based convergence"
 readme = "README.md"
 license = {text = "MIT"}
