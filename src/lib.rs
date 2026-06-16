@@ -1,4 +1,5 @@
 mod histogram;
+mod par;
 mod tree;
 mod decision_tree;
 mod random_forest;

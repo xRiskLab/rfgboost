@@ -4,8 +4,13 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rand::prelude::*;
+// Pcg64 (128-bit) is unavailable on emscripten/wasm; Pcg32 has the same
+// SeedableRng/RngCore API, so alias it under the Pcg64 name there.
+#[cfg(target_os = "emscripten")]
+use rand_pcg::Pcg32 as Pcg64;
+#[cfg(not(target_os = "emscripten"))]
 use rand_pcg::Pcg64;
-use rayon::prelude::*;
+use crate::par::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
@@ -201,7 +206,7 @@ pub fn fit_internal_rf_streaming(
     let welford_mean: Mutex<Vec<f64>> = Mutex::new(vec![0.0; n_samples]);
     let welford_m2: Mutex<Vec<f64>> = Mutex::new(vec![0.0; n_samples]);
 
-    rayon::scope(|s| {
+    scope(|s| {
         for (idx, boot, seed) in &tree_params {
             let idx = *idx;
             let seed = *seed;
@@ -373,7 +378,7 @@ fn get_raw_predictions(models: &[InternalRF], initial_pred: &[f64], learning_rat
 fn set_thread_pool(n_jobs: Option<usize>) {
     if let Some(nj) = n_jobs {
         if nj > 0 {
-            let _ = rayon::ThreadPoolBuilder::new()
+            let _ = ThreadPoolBuilder::new()
                 .num_threads(nj)
                 .build_global();
         }

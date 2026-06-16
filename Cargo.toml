@@ -1,6 +1,6 @@
 [package]
 name = "rfgboost"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 [lib]
@@ -8,9 +8,13 @@ name = "rfgboost_rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.19", features = ["extension-module"] }
-numpy = "0.19"
+pyo3 = { version = "0.22", features = ["extension-module", "gil-refs"] }
+numpy = "0.22"
 ndarray = "0.15"
 rand = "0.8"
 rand_pcg = "0.3"
+
+# Pyodide/wasm is single-threaded; rayon is native-only and replaced by a
+# sequential shim on emscripten (see src/par.rs).
+[target.'cfg(not(target_os = "emscripten"))'.dependencies]
 rayon = "1.10"

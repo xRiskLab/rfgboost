@@ -11,6 +11,7 @@ build/
 .mypy_cache/
 .ruff_cache/
 .mypy_cache/
+.pyodide_build/
 catboost_info/
 outputs/
 .DS_Store

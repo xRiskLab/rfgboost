@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-16
+
+### Added
+- WebAssembly / Pyodide support: rfgboost builds and runs in the browser (JupyterLite, PyScript). Includes an in-browser demo (`examples/web/`) and a `pyodide-wheel.yml` workflow that builds the `pyemscripten` wheel.
+
+### Changed
+- Bumped `pyo3`/`numpy` from 0.19 to 0.22.
+- `rayon` is now a native-only dependency; on emscripten/wasm a sequential fallback is used (native parallelism unchanged, verified ~3.7x on 10 cores).
+
+### Fixed
+- Added `scikit-learn` to core dependencies (it is imported at runtime but was previously only declared in the `test` extra).
+
 ## [0.1.0] - 2026-04-20
 
 ### Added
