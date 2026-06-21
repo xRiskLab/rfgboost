@@ -137,6 +137,23 @@ impl GpuForest {
             flat.roots.push(r);
         }
 
+        Self::from_flat(flat, n_features, out_dim)
+    }
+
+    /// Boosting helper: out_dim=1, each tree's leaf values scaled by `weights[t]`,
+    /// then the standard mean kernel — folds per-round learning-rate / tree-count
+    /// factors into one forest (the caller adds the bias afterward).
+    pub fn new_scaled(trees: &[&TreeNode], n_features: usize, weights: &[f32]) -> Option<GpuForest> {
+        let mut flat = Flat::default();
+        for (t, &w) in trees.iter().zip(weights) {
+            let leaf = move |node: &TreeNode, out: &mut [f32]| out[0] = (node.value as f32) * w;
+            let r = flatten_node(t, &mut flat, 1, &leaf);
+            flat.roots.push(r);
+        }
+        Self::from_flat(flat, n_features, 1)
+    }
+
+    fn from_flat(flat: Flat, n_features: usize, out_dim: usize) -> Option<GpuForest> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -180,7 +197,7 @@ impl GpuForest {
             b_values: mk(bytemuck::cast_slice(&flat.values), "values"),
             b_roots: mk(bytemuck::cast_slice(&flat.roots), "roots"),
             n_features: n_features as u32,
-            n_trees: trees.len() as u32,
+            n_trees: flat.roots.len() as u32,
             out_dim: out_dim as u32,
             device,
             queue,
