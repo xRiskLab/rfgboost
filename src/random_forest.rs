@@ -14,7 +14,10 @@ use crate::tree::{
     build_tree_on_bootstrap, resolve_max_features, traverse, traverse_proba, TreeConfig, TreeNode,
 };
 
-#[pyclass]
+// With the `cuda` feature the struct holds a CUDA context (thread-affine), so
+// the pyclass is `unsendable` there; default/wasm builds stay plain `#[pyclass]`.
+#[cfg_attr(feature = "cuda", pyclass(unsendable))]
+#[cfg_attr(not(feature = "cuda"), pyclass)]
 pub struct RandomForestRegressor {
     n_estimators: usize,
     max_depth: Option<usize>,
@@ -25,6 +28,9 @@ pub struct RandomForestRegressor {
     min_samples_leaf: usize,
     trees: Vec<TreeNode>,
     is_fitted: bool,
+    // Lazily built once, reused across predict_cuda calls; reset on fit.
+    #[cfg(feature = "cuda")]
+    cuda_cache: std::cell::RefCell<Option<crate::cuda::CudaForest>>,
 }
 
 #[pymethods]
@@ -38,7 +44,12 @@ impl RandomForestRegressor {
         n_estimators: usize, max_depth: Option<usize>, max_features: Option<String>,
         bootstrap: bool, random_state: Option<u64>, min_samples_split: usize, min_samples_leaf: usize,
     ) -> Self {
-        Self { n_estimators, max_depth, max_features, bootstrap, random_state, min_samples_split, min_samples_leaf, trees: Vec::new(), is_fitted: false }
+        Self {
+            n_estimators, max_depth, max_features, bootstrap, random_state,
+            min_samples_split, min_samples_leaf, trees: Vec::new(), is_fitted: false,
+            #[cfg(feature = "cuda")]
+            cuda_cache: std::cell::RefCell::new(None),
+        }
     }
 
     #[pyo3(signature = (x, y, sample_weight=None))]
@@ -89,6 +100,9 @@ impl RandomForestRegressor {
             })
             .collect();
 
+        #[cfg(feature = "cuda")]
+        { *self.cuda_cache.borrow_mut() = None; }
+
         self.is_fitted = true;
         Ok(())
     }
@@ -116,9 +130,16 @@ impl RandomForestRegressor {
         let nf = x_arr.ncols();
         // row-major f32 copy (ndarray .iter() yields logical row-major order)
         let xf: Vec<f32> = x_arr.iter().map(|&v| v as f32).collect();
-        let forest = crate::cuda::CudaForest::new(&self.trees, nf)
-            .ok_or_else(|| PyValueError::new_err("CUDA device unavailable"))?;
-        Ok(forest.predict_avg(&xf, n).into_iter().map(|v| v as f64).collect())
+        // Build the CUDA forest once (context + nvrtc kernel + upload) and reuse.
+        let mut cache = self.cuda_cache.borrow_mut();
+        if cache.is_none() {
+            *cache = Some(
+                crate::cuda::CudaForest::new(&self.trees, nf)
+                    .ok_or_else(|| PyValueError::new_err("CUDA device unavailable"))?,
+            );
+        }
+        let out = cache.as_ref().unwrap().predict_avg(&xf, n);
+        Ok(out.into_iter().map(|v| v as f64).collect())
     }
 
     fn get_info(&self) -> PyResult<HashMap<String, usize>> {
