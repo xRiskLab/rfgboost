@@ -1,0 +1,73 @@
+name: GPU wheels (manual)
+
+# GPU-enabled wheels (wgpu + cudarc, dynamic-loaded so they still run on
+# CPU-only machines). Built on demand as downloadable artifacts — kept separate
+# from the PyPI release so it can never break the CPU wheel pipeline. A single
+# PyPI package can't host both a CPU and a GPU wheel for the same platform tag,
+# so distribute these via a GitHub release or a separate index, not pypi-release.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build GPU wheel (cuda + gpu)
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x86_64
+          # newer manylinux for wgpu's deps; cudarc dynamic-loads libcuda at
+          # runtime so no CUDA toolkit is needed in the build container
+          manylinux: '2_28'
+          args: --release --out dist --features cuda,gpu
+          sccache: 'true'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpu-wheels-linux-x86_64
+          path: dist
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build GPU wheel (gpu / Metal)
+        uses: PyO3/maturin-action@v1
+        with:
+          target: aarch64
+          args: --release --out dist --features gpu
+          sccache: 'true'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpu-wheels-macos-arm64
+          path: dist
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build GPU wheel (cuda + gpu / DX12)
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x64
+          args: --release --out dist --features cuda,gpu
+          sccache: 'true'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpu-wheels-windows-x64
+          path: dist
