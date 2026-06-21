@@ -106,6 +106,21 @@ impl RandomForestRegressor {
             .collect())
     }
 
+    /// GPU-accelerated `predict` via the native CUDA backend (`cuda` feature).
+    /// Same result as `predict`; a throughput win for large batches.
+    #[cfg(feature = "cuda")]
+    fn predict_cuda(&self, x: PyReadonlyArray2<f64>) -> PyResult<Vec<f64>> {
+        if !self.is_fitted { return Err(PyValueError::new_err("RandomForestRegressor has not been fitted")); }
+        let x_arr = x.as_array();
+        let n = x_arr.nrows();
+        let nf = x_arr.ncols();
+        // row-major f32 copy (ndarray .iter() yields logical row-major order)
+        let xf: Vec<f32> = x_arr.iter().map(|&v| v as f32).collect();
+        let forest = crate::cuda::CudaForest::new(&self.trees, nf)
+            .ok_or_else(|| PyValueError::new_err("CUDA device unavailable"))?;
+        Ok(forest.predict_avg(&xf, n).into_iter().map(|v| v as f64).collect())
+    }
+
     fn get_info(&self) -> PyResult<HashMap<String, usize>> {
         let mut info = HashMap::new();
         info.insert("n_estimators".to_string(), self.n_estimators);
