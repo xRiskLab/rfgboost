@@ -129,7 +129,11 @@ impl RandomForestRegressor {
         let n = x_arr.nrows();
         let nf = x_arr.ncols();
         // row-major f32 copy (ndarray .iter() yields logical row-major order)
-        let xf: Vec<f32> = x_arr.iter().map(|&v| v as f32).collect();
+        // f64->f32 is the dominant host cost at scale; parallelize it (rayon).
+        let xf: Vec<f32> = match x_arr.as_slice() {
+            Some(s) => s.par_iter().map(|&v| v as f32).collect(),
+            None => x_arr.iter().map(|&v| v as f32).collect(), // non-contiguous fallback
+        };
         // Build the CUDA forest once (context + nvrtc kernel + upload) and reuse.
         let mut cache = self.cuda_cache.borrow_mut();
         if cache.is_none() {
