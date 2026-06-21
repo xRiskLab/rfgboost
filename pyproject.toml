@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rfgboost"
-version = "0.1.1"
+version = "0.1.2"
 description = "RFGBoost: async Random Forest + gradient boosting engine in Rust with CI-based convergence"
 readme = "README.md"
 license = {text = "MIT"}
@@ -22,7 +22,6 @@ keywords = [
 dependencies = [
     "numpy>=1.21.0",
     "scikit-learn>=1.0.0",
-    "fastwoe-rs>=0.1.0",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -42,6 +41,11 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+# fastwoe-rs powers the categorical (cat_features) WOE path. Optional so the
+# core package installs without it (e.g. in Pyodide, where it has no wheel).
+categorical = [
+    "fastwoe-rs>=0.1.0",
+]
 test = [
     "scikit-learn>=1.0.0",
     "pytest>=7.0.0",

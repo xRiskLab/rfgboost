@@ -141,9 +141,62 @@ jobs:
           name: wheels-sdist
           path: dist
 
+  pyodide:
+    name: Build Pyodide (WASM) wheel
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install pyodide-build
+        run: pip install "pyodide-build==0.35.1"
+
+      # Pyodide 0.28 cross-build env (CPython 3.13 / emscripten 4.0.9) — matches
+      # current JupyterLite. pyemscripten_2025_0 covers Pyodide 0.26.0 and later.
+      - name: Install cross-build environment
+        run: pyodide xbuildenv install 0.28.0
+
+      - name: Resolve emscripten + rust toolchain
+        id: ver
+        run: |
+          echo "emscripten=$(pyodide config get emscripten_version)" >> "$GITHUB_OUTPUT"
+          echo "rust=$(pyodide config get rust_toolchain)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up emscripten ${{ steps.ver.outputs.emscripten }}
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ steps.ver.outputs.emscripten }}
+
+      - name: Set up Rust ${{ steps.ver.outputs.rust }}
+        run: |
+          rustup toolchain install "${{ steps.ver.outputs.rust }}" --profile minimal
+          rustup target add wasm32-unknown-emscripten --toolchain "${{ steps.ver.outputs.rust }}"
+          rustup component add rust-src --toolchain "${{ steps.ver.outputs.rust }}"
+          rustup override set "${{ steps.ver.outputs.rust }}"
+
+      # build-std + hidden visibility: emscripten 4.0.9 rejects Rust std's
+      # mangled symbols in the side-module export table; recompiling std hidden
+      # avoids it.
+      - name: Build wasm wheel
+        run: |
+          export RUSTFLAGS="$(pyodide config get rustflags) -Zdefault-visibility=hidden"
+          export CARGO_UNSTABLE_BUILD_STD="std,panic_abort"
+          pyodide build
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-pyodide
+          path: dist/*.whl
+
   publish:
     name: Publish to PyPI
-    needs: [linux, macos, windows, sdist]
+    needs: [linux, macos, windows, sdist, pyodide]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts

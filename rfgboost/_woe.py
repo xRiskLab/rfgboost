@@ -173,7 +173,13 @@ class RFGBoostClassifier(ClassifierMixin, BaseEstimator):  # type: ignore[misc]
         cat_features = list(self.cat_features) if self.cat_features else None
 
         if cat_features:
-            from fastwoe import FastWoe
+            try:
+                from fastwoe import FastWoe
+            except ImportError as exc:
+                raise ImportError(
+                    "cat_features requires fastwoe-rs. Install it with "
+                    "`pip install 'rfgboost[categorical]'` (or `pip install fastwoe-rs`)."
+                ) from exc
 
             cat_rows = _to_cat_rows(X_arr, cat_features)
             self._woe = FastWoe()
@@ -345,7 +351,13 @@ class RFGBoostRegressor(RegressorMixin, BaseEstimator):  # type: ignore[misc]
         cat_features = list(self.cat_features) if self.cat_features else None
 
         if cat_features:
-            from fastwoe import FastWoe
+            try:
+                from fastwoe import FastWoe
+            except ImportError as exc:
+                raise ImportError(
+                    "cat_features requires fastwoe-rs. Install it with "
+                    "`pip install 'rfgboost[categorical]'` (or `pip install fastwoe-rs`)."
+                ) from exc
 
             y_binary = (y_arr > np.median(y_arr)).astype(int)
             cat_rows = _to_cat_rows(X_arr, cat_features)
