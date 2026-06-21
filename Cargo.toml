@@ -23,6 +23,11 @@ rayon = "1.10"
 wgpu = { version = "29", optional = true }
 pollster = { version = "0.4", optional = true }
 bytemuck = { version = "1", optional = true, features = ["derive"] }
+# Optional native CUDA backend (cudarc + nvrtc). Native NVIDIA only, off by
+# default; enable with `--features cuda`. dynamic-loading dlopens libcuda/nvrtc
+# at runtime, so no CUDA toolkit is needed at build time.
+cudarc = { version = "0.19", optional = true, default-features = false, features = ["driver", "nvrtc", "dynamic-loading", "std", "cuda-12080"] }
 
 [features]
 gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
+cuda = ["dep:cudarc"]

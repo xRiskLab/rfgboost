@@ -375,6 +375,85 @@ fn get_raw_predictions(models: &[InternalRF], initial_pred: &[f64], learning_rat
     pred
 }
 
+fn boost_devices() -> String {
+    #[allow(unused_mut)]
+    let mut d = vec!["cpu"];
+    #[cfg(feature = "cuda")] d.push("cuda");
+    #[cfg(feature = "gpu")] d.push("mps");
+    d.join(", ")
+}
+
+/// Raw boosting scores `[n][n_out] = initial + Σ_rounds lr·predict_all`, on the
+/// chosen device. The GPU paths fold the per-round `lr / tree-count` factors into
+/// one scaled forest per output channel and reuse the mean kernel; the caller
+/// adds the bias and applies the link function.
+fn raw_dispatch(
+    models: &[InternalRF], initial_pred: &[f64], lr: f64,
+    x: &ArrayView2<f64>, n_out: usize, device: &str,
+) -> PyResult<Vec<Vec<f64>>> {
+    match device {
+        "cpu" => Ok(get_raw_predictions(models, initial_pred, lr, x, n_out)),
+        #[cfg(feature = "cuda")]
+        "cuda" => boost_raw_cuda(models, initial_pred, lr, x, n_out),
+        #[cfg(feature = "gpu")]
+        "mps" | "metal" | "gpu" => boost_raw_gpu(models, initial_pred, lr, x, n_out),
+        other => Err(PyValueError::new_err(format!(
+            "device '{}' is not available in this build. Available: {}.", other, boost_devices()))),
+    }
+}
+
+#[cfg(any(feature = "cuda", feature = "gpu"))]
+fn boost_class_forest<'a>(
+    models: &'a [InternalRF], lr: f64, n_out: usize, c: usize,
+) -> Option<(Vec<&'a crate::tree::TreeNode>, Vec<f32>)> {
+    let class_models: Vec<&InternalRF> =
+        (0..models.len()).step_by(n_out).filter_map(|rs| models.get(rs + c)).collect();
+    let t_total: usize = class_models.iter().map(|m| m.trees.len()).sum();
+    if t_total == 0 { return None; }
+    let mut trees = Vec::with_capacity(t_total);
+    let mut weights = Vec::with_capacity(t_total);
+    for m in &class_models {
+        // mean kernel divides by t_total, so pre-scale leaves by (lr * t_total / t_round)
+        let w = lr as f32 * t_total as f32 / m.trees.len() as f32;
+        for tree in &m.trees { trees.push(tree); weights.push(w); }
+    }
+    Some((trees, weights))
+}
+
+#[cfg(feature = "cuda")]
+fn boost_raw_cuda(models: &[InternalRF], initial_pred: &[f64], lr: f64, x: &ArrayView2<f64>, n_out: usize) -> PyResult<Vec<Vec<f64>>> {
+    let (n, nf) = (x.nrows(), x.ncols());
+    let xf: Vec<f32> = x.iter().map(|&v| v as f32).collect();
+    let mut raw = vec![vec![0.0f64; n_out]; n];
+    for r in raw.iter_mut() { r.copy_from_slice(initial_pred); }
+    for c in 0..n_out {
+        if let Some((trees, weights)) = boost_class_forest(models, lr, n_out, c) {
+            let forest = crate::cuda::CudaForest::new_scaled(&trees, nf, &weights)
+                .ok_or_else(|| PyValueError::new_err("CUDA device unavailable"))?;
+            let contrib = forest.predict(&xf, n);
+            for i in 0..n { raw[i][c] += contrib[i] as f64; }
+        }
+    }
+    Ok(raw)
+}
+
+#[cfg(feature = "gpu")]
+fn boost_raw_gpu(models: &[InternalRF], initial_pred: &[f64], lr: f64, x: &ArrayView2<f64>, n_out: usize) -> PyResult<Vec<Vec<f64>>> {
+    let (n, nf) = (x.nrows(), x.ncols());
+    let xf: Vec<f32> = x.iter().map(|&v| v as f32).collect();
+    let mut raw = vec![vec![0.0f64; n_out]; n];
+    for r in raw.iter_mut() { r.copy_from_slice(initial_pred); }
+    for c in 0..n_out {
+        if let Some((trees, weights)) = boost_class_forest(models, lr, n_out, c) {
+            let forest = crate::gpu::GpuForest::new_scaled(&trees, nf, &weights)
+                .ok_or_else(|| PyValueError::new_err("GPU device unavailable"))?;
+            let contrib = forest.predict(&xf, n);
+            for i in 0..n { raw[i][c] += contrib[i] as f64; }
+        }
+    }
+    Ok(raw)
+}
+
 fn set_thread_pool(n_jobs: Option<usize>) {
     if let Some(nj) = n_jobs {
         if nj > 0 {
@@ -550,10 +629,12 @@ impl RFGBoostClassifier {
         Ok(())
     }
 
-    fn predict(&self, x: PyReadonlyArray2<f64>) -> PyResult<Vec<f64>> {
+    /// `device`: "cpu" (default), "cuda" or "mps"/"metal"/"gpu".
+    #[pyo3(signature = (x, device="cpu"))]
+    fn predict(&self, x: PyReadonlyArray2<f64>, device: &str) -> PyResult<Vec<f64>> {
         if !self.is_fitted { return Err(PyValueError::new_err("RFGBoostClassifier has not been fitted")); }
         let x_arr = x.as_array();
-        let raw = get_raw_predictions(&self.models, &self.initial_pred, self.learning_rate, &x_arr.view(), self.initial_pred.len());
+        let raw = raw_dispatch(&self.models, &self.initial_pred, self.learning_rate, &x_arr.view(), self.initial_pred.len(), device)?;
 
         if self.n_classes == 2 {
             Ok(raw.iter().map(|p| if sigmoid(p[0]) > 0.5 { 1.0 } else { 0.0 }).collect())
@@ -566,10 +647,12 @@ impl RFGBoostClassifier {
         }
     }
 
-    fn predict_proba(&self, x: PyReadonlyArray2<f64>) -> PyResult<Vec<Vec<f64>>> {
+    /// `device`: "cpu" (default), "cuda" or "mps"/"metal"/"gpu".
+    #[pyo3(signature = (x, device="cpu"))]
+    fn predict_proba(&self, x: PyReadonlyArray2<f64>, device: &str) -> PyResult<Vec<Vec<f64>>> {
         if !self.is_fitted { return Err(PyValueError::new_err("RFGBoostClassifier has not been fitted")); }
         let x_arr = x.as_array();
-        let raw = get_raw_predictions(&self.models, &self.initial_pred, self.learning_rate, &x_arr.view(), self.initial_pred.len());
+        let raw = raw_dispatch(&self.models, &self.initial_pred, self.learning_rate, &x_arr.view(), self.initial_pred.len(), device)?;
 
         if self.n_classes == 2 {
             Ok(raw.iter().map(|p| { let prob = sigmoid(p[0]); vec![1.0 - prob, prob] }).collect())
@@ -609,7 +692,7 @@ impl RFGBoostClassifier {
         let z2 = z * z;
 
         // Get the ensemble predicted probabilities
-        let proba = self.predict_proba(x)?;
+        let proba = self.predict_proba(x, "cpu")?;
 
         Ok((0..n).map(|i| {
             let p = proba[i][1]; // P(class=1)
@@ -884,16 +967,13 @@ impl RFGBoostRegressor {
         Ok(())
     }
 
-    fn predict(&self, x: PyReadonlyArray2<f64>) -> PyResult<Vec<f64>> {
+    /// `device`: "cpu" (default), "cuda" or "mps"/"metal"/"gpu".
+    #[pyo3(signature = (x, device="cpu"))]
+    fn predict(&self, x: PyReadonlyArray2<f64>, device: &str) -> PyResult<Vec<f64>> {
         if !self.is_fitted { return Err(PyValueError::new_err("RFGBoostRegressor has not been fitted")); }
         let x_arr = x.as_array();
-        let n = x_arr.nrows();
-        let mut pred = vec![self.initial_pred; n];
-        for rf in &self.models {
-            let update = rf.predict_all(&x_arr.view());
-            for i in 0..n { pred[i] += self.learning_rate * update[i]; }
-        }
-        Ok(pred)
+        let raw = raw_dispatch(&self.models, &[self.initial_pred], self.learning_rate, &x_arr.view(), 1, device)?;
+        Ok(raw.into_iter().map(|r| r[0]).collect())
     }
 
     /// Confidence intervals via split conformal prediction.
@@ -1021,14 +1101,18 @@ impl RFGBoost {
         else { Err(PyValueError::new_err("Invalid state")) }
     }
 
-    fn predict(&self, x: PyReadonlyArray2<f64>) -> PyResult<Vec<f64>> {
-        if let Some(clf) = &self.clf { clf.predict(x) }
-        else if let Some(reg) = &self.reg { reg.predict(x) }
+    /// `device`: "cpu" (default), "cuda" or "mps"/"metal"/"gpu".
+    #[pyo3(signature = (x, device="cpu"))]
+    fn predict(&self, x: PyReadonlyArray2<f64>, device: &str) -> PyResult<Vec<f64>> {
+        if let Some(clf) = &self.clf { clf.predict(x, device) }
+        else if let Some(reg) = &self.reg { reg.predict(x, device) }
         else { Err(PyValueError::new_err("Invalid state")) }
     }
 
-    fn predict_proba(&self, x: PyReadonlyArray2<f64>) -> PyResult<Vec<Vec<f64>>> {
-        if let Some(clf) = &self.clf { clf.predict_proba(x) }
+    /// `device`: "cpu" (default), "cuda" or "mps"/"metal"/"gpu".
+    #[pyo3(signature = (x, device="cpu"))]
+    fn predict_proba(&self, x: PyReadonlyArray2<f64>, device: &str) -> PyResult<Vec<Vec<f64>>> {
+        if let Some(clf) = &self.clf { clf.predict_proba(x, device) }
         else { Err(PyValueError::new_err("predict_proba is only available for classification")) }
     }
 

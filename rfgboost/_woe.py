@@ -204,13 +204,13 @@ class RFGBoostClassifier(ClassifierMixin, BaseEstimator):  # type: ignore[misc]
         )
         return self
 
-    def predict(self, X: ArrayLike) -> NDArray[np.float64]:
+    def predict(self, X: ArrayLike, device: str = "cpu") -> NDArray[np.float64]:
         X_encoded = self._prepare_X(X)
-        return np.array(self._model.predict(X_encoded), dtype=np.float64)
+        return np.array(self._model.predict(X_encoded, device), dtype=np.float64)
 
-    def predict_proba(self, X: ArrayLike) -> NDArray[np.float64]:
+    def predict_proba(self, X: ArrayLike, device: str = "cpu") -> NDArray[np.float64]:
         X_encoded = self._prepare_X(X)
-        return np.array(self._model.predict_proba(X_encoded), dtype=np.float64)
+        return np.array(self._model.predict_proba(X_encoded, device), dtype=np.float64)
 
     def predict_ci(self, X: ArrayLike, alpha: float = 0.05) -> NDArray[np.float64]:
         X_encoded = self._prepare_X(X)
@@ -380,9 +380,9 @@ class RFGBoostRegressor(RegressorMixin, BaseEstimator):  # type: ignore[misc]
         )
         return self
 
-    def predict(self, X: ArrayLike) -> NDArray[np.float64]:
+    def predict(self, X: ArrayLike, device: str = "cpu") -> NDArray[np.float64]:
         X_encoded = self._prepare_X(X)
-        return np.array(self._model.predict(X_encoded), dtype=np.float64)
+        return np.array(self._model.predict(X_encoded, device), dtype=np.float64)
 
     def predict_ci(self, X: ArrayLike, alpha: float = 0.05) -> NDArray[np.float64]:
         X_encoded = self._prepare_X(X)

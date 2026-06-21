@@ -8,6 +8,8 @@ mod boosting;
 mod unsupervised;
 #[cfg(feature = "gpu")]
 mod gpu;
+#[cfg(feature = "cuda")]
+mod cuda;
 
 use pyo3::prelude::*;
 

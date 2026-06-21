@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Optional, off-by-default **GPU acceleration** across the predict/explain API via a `device=` argument:
+  - `device="cuda"` — native CUDA (cudarc + nvrtc, `cuda` Cargo feature, NVIDIA).
+  - `device="mps"` / `"metal"` / `"gpu"` — wgpu → Metal/Vulkan/DX12 (`gpu` Cargo feature).
+  - `device="cpu"` (default) unchanged.
+  - Covered: `RandomForestRegressor.predict`, `RandomForestClassifier.predict`/`predict_proba`, `RFGBoost`/`RFGBoostRegressor`/`RFGBoostClassifier` `predict`/`predict_proba`, and `TreeSHAP.explain`.
+- Native-only and excluded from the default and wasm wheels. A wheel carries whichever backend it was built with; requesting an unavailable device raises a clear error.
+- Measured speedups over the CPU path: predict up to ~33× (A100 `cuda`) / ~12× (M4 `mps`); `TreeSHAP.explain` ~3× (exact 2^k Shapley — a correct GPU reference, not a substitute for the polynomial TreeSHAP algorithm).
+
 ## [0.1.2] - 2026-06-16
 
 ### Changed
