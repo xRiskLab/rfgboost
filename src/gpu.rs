@@ -1,18 +1,19 @@
 //! Optional GPU forest inference (`wgpu` -> Metal / Vulkan / DX12).
 //!
 //! Feature-gated (`gpu`), native-only — never compiled into the wasm wheel.
-//! The recursive `TreeNode` forest is flattened to struct-of-arrays (the
-//! GPU-friendly layout) and traversed one row per GPU thread, mirroring
-//! `predict_all` (mean of `traverse` over a round's trees). Compute is f32
-//! (WGSL has no f64); parity with the CPU `traverse` is exact to f32 rounding.
-//!
-//! Benchmark on Apple M4 (10-core CPU vs 10-core GPU, end-to-end): ~17x over
-//! rayon at >=100k rows, crossover ~2-5k rows. Use for large batch / SHAP-
-//! background scoring, not single-row latency.
+//! Multi-output: `out_dim = 1` gives the mean leaf value (regression / boosting
+//! round contribution); `out_dim = n_classes` gives the mean leaf distribution
+//! (class probabilities). One kernel covers both — one row per GPU thread,
+//! accumulating an `out_dim`-length vector. f32 compute; parity with the CPU
+//! `traverse`/`traverse_proba` is exact to f32 rounding. `GpuForest::new`
+//! returns `None` when no adapter is available so callers fall back to CPU.
 
 use crate::tree::TreeNode;
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
+
+/// Max supported output width (n_classes). Forests above this fall back to CPU.
+pub const MAX_OUT: usize = 32;
 
 #[derive(Default)]
 struct Flat {
@@ -20,29 +21,36 @@ struct Flat {
     threshold: Vec<f32>,
     left: Vec<u32>,
     right: Vec<u32>,
-    value: Vec<f32>,
+    values: Vec<f32>, // n_nodes * out_dim; only leaf slots are meaningful
     roots: Vec<u32>,
 }
 
-fn flatten_node(node: &TreeNode, f: &mut Flat) -> u32 {
+// Flattens the recursive forest to SoA. `leaf` fills the out_dim-length slot for
+// each leaf. Nodes are pushed in id order with out_dim values each, so node `id`
+// owns values[id*out_dim .. id*out_dim+out_dim].
+fn flatten_node<F: Fn(&TreeNode, &mut [f32])>(
+    node: &TreeNode,
+    f: &mut Flat,
+    out_dim: usize,
+    leaf: &F,
+) -> u32 {
     let id = f.feature.len() as u32;
-    // build_node always produces either two children or a (None, None) leaf.
+    f.feature.push(0);
+    f.threshold.push(0.0);
+    f.left.push(0);
+    f.right.push(0);
+    let base = f.values.len();
+    f.values.resize(base + out_dim, 0.0);
     if node.left.is_some() && node.right.is_some() {
-        f.feature.push(node.feature as i32);
-        f.threshold.push(node.threshold as f32);
-        f.left.push(0);
-        f.right.push(0);
-        f.value.push(0.0);
-        let l = flatten_node(node.left.as_ref().unwrap(), f);
-        let r = flatten_node(node.right.as_ref().unwrap(), f);
+        f.feature[id as usize] = node.feature as i32;
+        f.threshold[id as usize] = node.threshold as f32;
+        let l = flatten_node(node.left.as_ref().unwrap(), f, out_dim, leaf);
+        let r = flatten_node(node.right.as_ref().unwrap(), f, out_dim, leaf);
         f.left[id as usize] = l;
         f.right[id as usize] = r;
     } else {
-        f.feature.push(-1);
-        f.threshold.push(0.0);
-        f.left.push(0);
-        f.right.push(0);
-        f.value.push(node.value as f32);
+        f.feature[id as usize] = -1;
+        leaf(node, &mut f.values[base..base + out_dim]);
     }
     id
 }
@@ -53,17 +61,17 @@ struct Params {
     n_samples: u32,
     n_features: u32,
     n_trees: u32,
-    _pad: u32,
+    out_dim: u32,
 }
 
 const SHADER: &str = r#"
-struct Params { n_samples: u32, n_features: u32, n_trees: u32, pad: u32 };
+struct Params { n_samples: u32, n_features: u32, n_trees: u32, out_dim: u32 };
 @group(0) @binding(0) var<storage, read> features: array<f32>;
 @group(0) @binding(1) var<storage, read> n_feature: array<i32>;
 @group(0) @binding(2) var<storage, read> n_threshold: array<f32>;
 @group(0) @binding(3) var<storage, read> n_left: array<u32>;
 @group(0) @binding(4) var<storage, read> n_right: array<u32>;
-@group(0) @binding(5) var<storage, read> n_value: array<f32>;
+@group(0) @binding(5) var<storage, read> values: array<f32>;
 @group(0) @binding(6) var<storage, read> roots: array<u32>;
 @group(0) @binding(7) var<storage, read_write> out: array<f32>;
 @group(0) @binding(8) var<uniform> params: Params;
@@ -72,19 +80,25 @@ struct Params { n_samples: u32, n_features: u32, n_trees: u32, pad: u32 };
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let s = gid.x;
     if (s >= params.n_samples) { return; }
+    let od = params.out_dim;
     let base = s * params.n_features;
-    var acc = 0.0;
+    var acc: array<f32, 32>;
+    for (var k = 0u; k < od; k = k + 1u) { acc[k] = 0.0; }
     for (var t = 0u; t < params.n_trees; t = t + 1u) {
         var node = roots[t];
         loop {
             let f = n_feature[node];
-            if (f < 0) { acc = acc + n_value[node]; break; }
+            if (f < 0) { break; }
             let xv = features[base + u32(f)];
             if (xv <= n_threshold[node]) { node = n_left[node]; }
             else { node = n_right[node]; }
         }
+        let vb = node * od;
+        for (var k = 0u; k < od; k = k + 1u) { acc[k] = acc[k] + values[vb + k]; }
     }
-    out[s] = acc / f32(params.n_trees);
+    let ob = s * od;
+    let inv = 1.0 / f32(params.n_trees);
+    for (var k = 0u; k < od; k = k + 1u) { out[ob + k] = acc[k] * inv; }
 }
 "#;
 
@@ -97,19 +111,29 @@ pub struct GpuForest {
     b_threshold: wgpu::Buffer,
     b_left: wgpu::Buffer,
     b_right: wgpu::Buffer,
-    b_value: wgpu::Buffer,
+    b_values: wgpu::Buffer,
     b_roots: wgpu::Buffer,
     n_features: u32,
     n_trees: u32,
+    out_dim: u32,
 }
 
 impl GpuForest {
-    /// Flatten `trees` and upload to the GPU. Returns `None` if no GPU adapter
-    /// is available (caller should fall back to the CPU path).
-    pub fn new(trees: &[TreeNode], n_features: usize) -> Option<GpuForest> {
+    /// Flatten `trees` (each leaf producing an `out_dim`-length vector via
+    /// `leaf`) and upload to the GPU. `None` if `out_dim > MAX_OUT` or no
+    /// adapter is available.
+    pub fn new<F: Fn(&TreeNode, &mut [f32])>(
+        trees: &[TreeNode],
+        n_features: usize,
+        out_dim: usize,
+        leaf: F,
+    ) -> Option<GpuForest> {
+        if out_dim == 0 || out_dim > MAX_OUT {
+            return None;
+        }
         let mut flat = Flat::default();
         for t in trees {
-            let r = flatten_node(t, &mut flat);
+            let r = flatten_node(t, &mut flat, out_dim, &leaf);
             flat.roots.push(r);
         }
 
@@ -153,25 +177,31 @@ impl GpuForest {
             b_threshold: mk(bytemuck::cast_slice(&flat.threshold), "threshold"),
             b_left: mk(bytemuck::cast_slice(&flat.left), "left"),
             b_right: mk(bytemuck::cast_slice(&flat.right), "right"),
-            b_value: mk(bytemuck::cast_slice(&flat.value), "value"),
+            b_values: mk(bytemuck::cast_slice(&flat.values), "values"),
             b_roots: mk(bytemuck::cast_slice(&flat.roots), "roots"),
             n_features: n_features as u32,
             n_trees: trees.len() as u32,
+            out_dim: out_dim as u32,
             device,
             queue,
             pipeline,
         })
     }
 
-    /// Mean of `traverse` over all trees, one value per row. `x` is row-major
-    /// f32 of shape `n_rows x n_features`.
-    pub fn predict_avg(&self, x: &[f32], n_rows: usize) -> Vec<f32> {
+    pub fn out_dim(&self) -> usize {
+        self.out_dim as usize
+    }
+
+    /// Mean over trees of the leaf vector, per row. `x` is row-major f32 of shape
+    /// `n_rows x n_features`; returns `n_rows * out_dim` f32 (row-major).
+    pub fn predict(&self, x: &[f32], n_rows: usize) -> Vec<f32> {
         let b_x = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("x"),
             contents: bytemuck::cast_slice(x),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
-        let out_size = (n_rows * 4) as u64;
+        let out_len = n_rows * self.out_dim as usize;
+        let out_size = (out_len * 4) as u64;
         let b_out = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("out"),
             size: out_size,
@@ -188,7 +218,7 @@ impl GpuForest {
             n_samples: n_rows as u32,
             n_features: self.n_features,
             n_trees: self.n_trees,
-            _pad: 0,
+            out_dim: self.out_dim,
         };
         let b_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("params"),
@@ -206,7 +236,7 @@ impl GpuForest {
                 wgpu::BindGroupEntry { binding: 2, resource: self.b_threshold.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: self.b_left.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: self.b_right.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: self.b_value.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: self.b_values.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 6, resource: self.b_roots.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 7, resource: b_out.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 8, resource: b_params.as_entire_binding() },
@@ -247,26 +277,10 @@ mod tests {
     use crate::tree::traverse;
 
     fn leaf(v: f64) -> TreeNode {
-        TreeNode {
-            feature: 0,
-            threshold: 0.0,
-            left: None,
-            right: None,
-            value: v,
-            samples: 1,
-            class_counts: None,
-        }
+        TreeNode { feature: 0, threshold: 0.0, left: None, right: None, value: v, samples: 1, class_counts: None }
     }
     fn node(feature: usize, threshold: f64, l: TreeNode, r: TreeNode) -> TreeNode {
-        TreeNode {
-            feature,
-            threshold,
-            left: Some(Box::new(l)),
-            right: Some(Box::new(r)),
-            value: 0.0,
-            samples: 1,
-            class_counts: None,
-        }
+        TreeNode { feature, threshold, left: Some(Box::new(l)), right: Some(Box::new(r)), value: 0.0, samples: 1, class_counts: None }
     }
 
     // Needs a GPU adapter; run locally: `cargo test --features gpu -- --ignored`
@@ -278,29 +292,13 @@ mod tests {
             node(1, -0.2, leaf(-1.0), node(0, 1.0, leaf(0.5), leaf(4.0))),
             node(0, 1.5, leaf(0.0), leaf(7.0)),
         ];
-        let nf = 2usize;
-        let rows: Vec<[f64; 2]> = vec![
-            [-1.0, 0.1],
-            [0.3, 0.9],
-            [2.0, -0.5],
-            [0.0, 0.0],
-            [1.7, 1.0],
-        ];
-        let xf: Vec<f32> = rows
-            .iter()
-            .flat_map(|r| r.iter().map(|&v| v as f32))
-            .collect();
-
-        let g = GpuForest::new(&trees, nf).expect("no GPU adapter");
-        let gpu = g.predict_avg(&xf, rows.len());
-
+        let rows: Vec<[f64; 2]> = vec![[-1.0, 0.1], [0.3, 0.9], [2.0, -0.5], [0.0, 0.0], [1.7, 1.0]];
+        let xf: Vec<f32> = rows.iter().flat_map(|r| r.iter().map(|&v| v as f32)).collect();
+        let g = GpuForest::new(&trees, 2, 1, |n, out| out[0] = n.value as f32).expect("no GPU adapter");
+        let gpu = g.predict(&xf, rows.len());
         for (i, r) in rows.iter().enumerate() {
             let cpu = trees.iter().map(|t| traverse(t, r)).sum::<f64>() / trees.len() as f64;
-            assert!(
-                (cpu as f32 - gpu[i]).abs() < 1e-5,
-                "row {i}: cpu={cpu} gpu={}",
-                gpu[i]
-            );
+            assert!((cpu as f32 - gpu[i]).abs() < 1e-5, "row {i}: cpu={cpu} gpu={}", gpu[i]);
         }
     }
 }
