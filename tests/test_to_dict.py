@@ -7,7 +7,7 @@ import json
 import numpy as np
 import pytest
 
-from rfgboost import RFGBoostClassifier, RFGBoostRegressor
+from rfgboost import RFGBoostClassifier, RFGBoostRegressor, WoeEncoder
 
 
 def _traverse(tree: dict, x: np.ndarray) -> float:
@@ -150,27 +150,26 @@ def test_to_dict_with_cat_features_binary() -> None:
     X = np.column_stack([cat0, num0, cat1, num1])
     y = ((cat0 == "a").astype(float) + num0 > 0.8).astype(np.float64)
 
+    enc = WoeEncoder(cat_features=[0, 2]).fit(X, y)
     m = RFGBoostClassifier(
         n_estimators=4,
         learning_rate=0.1,
         rf_n_estimators=5,
         rf_max_depth=4,
         random_state=42,
-        cat_features=[0, 2],
-    ).fit(X, y)
+    ).fit(enc.transform(X), y)
 
-    d = m.to_dict(n_features=4)
-    assert "woe" in d
-    assert d["woe"]["cat_features"] == [0, 2]
-    assert d["woe"]["numeric_features"] == [1, 3]
-    assert d["woe"]["woe_multiclass"] is False
-    assert len(d["woe"]["woe_tables"]) == 2
+    woe = enc.to_dict(n_features=4)
+    assert woe["cat_features"] == [0, 2]
+    assert woe["numeric_features"] == [1, 3]
+    assert woe["woe_multiclass"] is False
+    assert len(woe["woe_tables"]) == 2
 
     Xt = X[:40]
-    encoded = _encode_with_woe(d, Xt)
-    raw = _predict_raw(d, encoded)
+    encoded = _encode_with_woe({"woe": woe}, Xt)
+    raw = _predict_raw(m.to_dict(), encoded)
     proba_py = _sigmoid(raw[:, 0])
-    proba_rust = m.predict_proba(Xt)[:, 1]
+    proba_rust = m.predict_proba(enc.transform(Xt))[:, 1]
     np.testing.assert_allclose(proba_py, proba_rust, atol=1e-12)
 
 
@@ -182,26 +181,26 @@ def test_to_dict_with_cat_features_multiclass() -> None:
     X = np.column_stack([cat0, num0])
     y = (rng.choice([0, 1, 2], size=n)).astype(np.float64)
 
+    enc = WoeEncoder(cat_features=[0]).fit(X, y)
     m = RFGBoostClassifier(
         n_estimators=3,
         learning_rate=0.1,
         rf_n_estimators=4,
         rf_max_depth=3,
         random_state=42,
-        cat_features=[0],
-    ).fit(X, y)
+    ).fit(enc.transform(X), y)
 
-    d = m.to_dict(n_features=2)
-    assert d["woe"]["woe_multiclass"] is True
-    assert d["woe"]["n_woe_classes"] == 3
-    assert len(d["woe"]["woe_tables"]) == 1
-    assert len(d["woe"]["woe_tables"][0]) == 3
+    woe = enc.to_dict(n_features=2)
+    assert woe["woe_multiclass"] is True
+    assert woe["n_woe_classes"] == 3
+    assert len(woe["woe_tables"]) == 1
+    assert len(woe["woe_tables"][0]) == 3
 
     Xt = X[:40]
-    encoded = _encode_with_woe(d, Xt)
-    raw = _predict_raw(d, encoded)
+    encoded = _encode_with_woe({"woe": woe}, Xt)
+    raw = _predict_raw(m.to_dict(), encoded)
     proba_py = _softmax(raw)
-    proba_rust = m.predict_proba(Xt)
+    proba_rust = m.predict_proba(enc.transform(Xt))
     np.testing.assert_allclose(proba_py, proba_rust, atol=1e-12)
 
 

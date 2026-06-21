@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Covered: `RandomForestRegressor.predict`, `RandomForestClassifier.predict`/`predict_proba`, `RFGBoost`/`RFGBoostRegressor`/`RFGBoostClassifier` `predict`/`predict_proba`, and `TreeSHAP.explain`.
 - Native-only and excluded from the default and wasm wheels. A wheel carries whichever backend it was built with; requesting an unavailable device raises a clear error.
 - Measured speedups over the CPU path: predict up to ~33× (A100 `cuda`) / ~12× (M4 `mps`); `TreeSHAP.explain` ~3× (exact 2^k Shapley — a correct GPU reference, not a substitute for the polynomial TreeSHAP algorithm).
+- `rfgboost.__version__` (read from package metadata).
+- `rfgboost.WoeEncoder` — standalone scikit-learn transformer for supervised Weight-of-Evidence encoding of categorical features (fastwoe-rs).
+
+### Changed
+- **Breaking:** WOE/categorical encoding is decoupled from the boosting estimators. `RFGBoostClassifier`/`RFGBoostRegressor` no longer accept `cat_features` and are pure-numeric — for categorical data, compose with a Pipeline: `make_pipeline(WoeEncoder(cat_features=...), RFGBoostClassifier())`. This keeps the estimators free of the `fastwoe-rs` dependency (e.g. in Pyodide/WASM, where it has no wheel). The serializable WOE bundle (`to_dict`) and `get_iv_analysis` now live on `WoeEncoder`; `to_dict` on the estimators no longer takes `n_features`.
 
 ## [0.1.2] - 2026-06-16
 

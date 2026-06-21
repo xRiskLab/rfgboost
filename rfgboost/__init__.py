@@ -15,6 +15,7 @@ from rfgboost._rs import (
     TreeSHAP,
 )
 from rfgboost._estimators import RFGBoostClassifier, RFGBoostRegressor
+from rfgboost._woe import WoeEncoder
 
 __all__ = [
     "__version__",
@@ -25,4 +26,5 @@ __all__ = [
     "TreeSHAP",
     "RFGBoostClassifier",
     "RFGBoostRegressor",
+    "WoeEncoder",
 ]

@@ -1,8 +1,18 @@
-"""Python wrappers that add WOE categorical encoding to Rust classifiers."""
+"""Scikit-learn estimator wrappers over the Rust RFGBoost engines.
+
+These are pure numeric — categorical / Weight-of-Evidence encoding lives in the
+standalone `rfgboost.WoeEncoder` transformer. For categorical data, compose with
+a Pipeline::
+
+    from sklearn.pipeline import make_pipeline
+    from rfgboost import WoeEncoder, RFGBoostClassifier
+
+    model = make_pipeline(WoeEncoder(cat_features=[0, 3]), RFGBoostClassifier())
+"""
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -16,92 +26,15 @@ from rfgboost._rs import (
 )
 
 
-def _to_cat_rows(X: ArrayLike, cat_indices: Iterable[int]) -> list[list[str]]:
-    """Extract categorical columns as list of rows (list of list of str)."""
-    arr = np.asarray(X)
-    n = arr.shape[0]
-    indices = list(cat_indices)
-    return [[str(arr[i, c]) for c in indices] for i in range(n)]
-
-
-def _woe_bundle(
-    woe_encoder: Any,
-    cat_features: list[int],
-    n_total_features: int,
-    multiclass: bool,
-    n_classes: int,
-) -> dict[str, Any]:
-    """Serialize fitted FastWoe state into JSON-friendly lookup tables.
-
-    Layout matches `_encode_woe`: WOE columns first (in cat_features order;
-    one column per class for multiclass, one per feature for binary), then
-    numeric columns in their original index order.
-    """
-    cat_set = set(cat_features)
-    numeric_features = [i for i in range(n_total_features) if i not in cat_set]
-    bundle: dict[str, Any] = {
-        "cat_features": list(cat_features),
-        "numeric_features": numeric_features,
-        "woe_multiclass": multiclass,
-    }
-
-    tables: list[Any] = []
-    if multiclass:
-        bundle["n_woe_classes"] = n_classes
-        for i, _ in enumerate(cat_features):
-            per_class: list[dict[str, float]] = []
-            for c in range(n_classes):
-                rows = woe_encoder.get_feature_mapping_multiclass(c, f"feature_{i}")
-                per_class.append({str(r.category): float(r.woe) for r in rows})
-            tables.append(per_class)
-    else:
-        for i, _ in enumerate(cat_features):
-            rows = woe_encoder.get_feature_mapping(f"feature_{i}")
-            tables.append({str(r.category): float(r.woe) for r in rows})
-
-    bundle["woe_tables"] = tables
-    return bundle
-
-
-def _encode_woe(
-    woe_encoder: Any,
-    X: ArrayLike,
-    cat_indices: Iterable[int],
-    multiclass: bool = False,
-) -> NDArray[np.float64]:
-    """Apply fitted WOE encoder to categorical columns, return float64 array.
-
-    For binary, returns one WOE column per categorical feature.
-    For multiclass, returns one WOE column per (feature, class) pair.
-    """
-    arr = np.asarray(X)
-    if arr.ndim == 1:
-        arr = arr.reshape(1, -1)
-
-    indices = list(cat_indices)
-    cat_rows = _to_cat_rows(arr, indices)
-    if multiclass:
-        woe_rows = woe_encoder.transform_matrix_multiclass(cat_rows)
-    else:
-        woe_rows = woe_encoder.transform_matrix(cat_rows)
-    woe_arr: NDArray[np.float64] = np.array(woe_rows, dtype=np.float64)
-
-    if num_indices := [i for i in range(arr.shape[1]) if i not in indices]:
-        num_arr = arr[:, num_indices].astype(np.float64)
-        return np.hstack([woe_arr, num_arr])
-    return woe_arr
+def _f64(X: ArrayLike) -> NDArray[np.float64]:
+    return np.ascontiguousarray(X, dtype=np.float64)
 
 
 class RFGBoostClassifier(ClassifierMixin, BaseEstimator):  # type: ignore[misc]
-    """RFGBoostClassifier with optional WOE encoding for categorical features.
+    """RFGBoost gradient-boosting classifier over numeric features.
 
-    Parameters
-    ----------
-    cat_features : list of int, optional
-        Column indices of categorical features. When set, these columns are
-        WOE-encoded during fit/predict using fastwoe-rs. Multiclass targets
-        produce one WOE column per (feature, class) pair.
-    All other parameters are passed to the Rust RFGBoostClassifier.
+    For categorical features, WOE-encode first with `rfgboost.WoeEncoder` in a
+    Pipeline.
     """
 
     def __init__(
@@ -119,9 +52,7 @@ class RFGBoostClassifier(ClassifierMixin, BaseEstimator):  # type: ignore[misc]
         async_mode: bool = False,
         tol: float = 1e-4,
         n_jobs: Optional[int] = None,
-        cat_features: Optional[Iterable[int]] = None,
     ) -> None:
-        # Store hyperparameters as attributes (sklearn BaseEstimator convention)
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
         self.rf_n_estimators = rf_n_estimators
@@ -135,7 +66,6 @@ class RFGBoostClassifier(ClassifierMixin, BaseEstimator):  # type: ignore[misc]
         self.async_mode = async_mode
         self.tol = tol
         self.n_jobs = n_jobs
-        self.cat_features = cat_features
 
     def _build_rust_params(self) -> dict[str, Any]:
         return dict(
@@ -160,108 +90,30 @@ class RFGBoostClassifier(ClassifierMixin, BaseEstimator):  # type: ignore[misc]
         y: ArrayLike,
         sample_weight: Optional[ArrayLike] = None,
     ) -> RFGBoostClassifier:
-        X_arr = np.asarray(X)
-        y_arr = np.ascontiguousarray(y, dtype=np.float64)
-        sw = (
-            np.ascontiguousarray(sample_weight, dtype=np.float64)
-            if sample_weight is not None
-            else None
-        )
-
+        y_arr = _f64(y)
+        sw = _f64(sample_weight) if sample_weight is not None else None
         self.classes_ = np.unique(y_arr)
-        is_multiclass = len(self.classes_) > 2
-        cat_features = list(self.cat_features) if self.cat_features else None
-
-        if cat_features:
-            try:
-                from fastwoe import FastWoe
-            except ImportError as exc:
-                raise ImportError(
-                    "cat_features requires fastwoe-rs, which has no Pyodide/WASM "
-                    "wheel and so is unavailable in this environment (e.g. "
-                    "JupyterLite). It ships automatically with a normal install; "
-                    "otherwise run `pip install fastwoe-rs`."
-                ) from exc
-
-            cat_rows = _to_cat_rows(X_arr, cat_features)
-            self._woe = FastWoe()
-            if is_multiclass:
-                self._woe.fit_matrix_multiclass(cat_rows, y_arr.astype(int))
-            else:
-                self._woe.fit_matrix(cat_rows, y_arr.astype(int))
-            self._woe_multiclass = is_multiclass
-            X_encoded = _encode_woe(self._woe, X_arr, cat_features, multiclass=is_multiclass)
-        else:
-            self._woe = None
-            self._woe_multiclass = False
-            X_encoded = np.ascontiguousarray(X_arr, dtype=np.float64)
-
         self._model = _RustClassifier(**self._build_rust_params())
-        self._model.fit(
-            np.ascontiguousarray(X_encoded, dtype=np.float64),
-            y_arr,
-            sw,
-        )
+        self._model.fit(_f64(X), y_arr, sw)
         return self
 
     def predict(self, X: ArrayLike, device: str = "cpu") -> NDArray[np.float64]:
-        X_encoded = self._prepare_X(X)
-        return np.array(self._model.predict(X_encoded, device), dtype=np.float64)
+        return np.array(self._model.predict(_f64(X), device), dtype=np.float64)
 
     def predict_proba(self, X: ArrayLike, device: str = "cpu") -> NDArray[np.float64]:
-        X_encoded = self._prepare_X(X)
-        return np.array(self._model.predict_proba(X_encoded, device), dtype=np.float64)
+        return np.array(self._model.predict_proba(_f64(X), device), dtype=np.float64)
 
     def predict_ci(self, X: ArrayLike, alpha: float = 0.05) -> NDArray[np.float64]:
-        X_encoded = self._prepare_X(X)
-        return np.array(self._model.predict_ci(X_encoded, alpha), dtype=np.float64)
+        return np.array(self._model.predict_ci(_f64(X), alpha), dtype=np.float64)
 
     def feature_importances(self) -> list[float]:
         return list(self._model.feature_importances())
 
-    def get_iv_analysis(self) -> Any:
-        if self._woe is None:
-            raise ValueError("No categorical features were encoded with WOE")
-        return self._woe.get_iv_analysis()
-
-    def to_dict(self, n_features: Optional[int] = None) -> dict[str, Any]:
-        """Serialize the fitted model to a JSON-friendly dict.
-
-        Includes WOE lookup tables when `cat_features` was used. The returned
-        structure can be dumped via `json.dump` after replacing NaN thresholds
-        if the consumer rejects them. `n_features` is required when
-        `cat_features` was used so the numeric-column ordering can be recovered.
-        """
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the fitted model to a JSON-friendly dict."""
         if not getattr(self, "_model", None) or not self._model.is_fitted:
             raise ValueError("RFGBoostClassifier has not been fitted")
-        d: dict[str, Any] = dict(self._model.to_dict())
-        if self.cat_features and self._woe is not None:
-            cat_features = list(self.cat_features)
-            if n_features is None:
-                raise ValueError(
-                    "n_features (original column count) is required when cat_features was used"
-                )
-            d["woe"] = _woe_bundle(
-                self._woe,
-                cat_features,
-                n_features,
-                multiclass=getattr(self, "_woe_multiclass", False),
-                n_classes=len(self.classes_),
-            )
-        return d
-
-    def _prepare_X(self, X: ArrayLike) -> NDArray[np.float64]:
-        if self.cat_features and self._woe is not None:
-            return np.ascontiguousarray(
-                _encode_woe(
-                    self._woe,
-                    X,
-                    self.cat_features,
-                    multiclass=getattr(self, "_woe_multiclass", False),
-                ),
-                dtype=np.float64,
-            )
-        return np.ascontiguousarray(X, dtype=np.float64)
+        return dict(self._model.to_dict())
 
     @property
     def n_classes_(self) -> Optional[int]:
@@ -277,15 +129,10 @@ class RFGBoostClassifier(ClassifierMixin, BaseEstimator):  # type: ignore[misc]
 
 
 class RFGBoostRegressor(RegressorMixin, BaseEstimator):  # type: ignore[misc]
-    """RFGBoostRegressor with optional WOE encoding for categorical features.
+    """RFGBoost gradient-boosting regressor over numeric features.
 
-    Parameters
-    ----------
-    cat_features : list of int, optional
-        Column indices of categorical features. When set, these columns are
-        WOE-encoded during fit/predict using fastwoe-rs. Note: WOE is computed
-        by binarizing the regression target at its median.
-    All other parameters are passed to the Rust RFGBoostRegressor.
+    For categorical features, WOE-encode first with `rfgboost.WoeEncoder` in a
+    Pipeline.
     """
 
     def __init__(
@@ -303,7 +150,6 @@ class RFGBoostRegressor(RegressorMixin, BaseEstimator):  # type: ignore[misc]
         async_mode: bool = False,
         tol: float = 1e-4,
         n_jobs: Optional[int] = None,
-        cat_features: Optional[Iterable[int]] = None,
     ) -> None:
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
@@ -318,7 +164,6 @@ class RFGBoostRegressor(RegressorMixin, BaseEstimator):  # type: ignore[misc]
         self.async_mode = async_mode
         self.tol = tol
         self.n_jobs = n_jobs
-        self.cat_features = cat_features
 
     def _build_rust_params(self) -> dict[str, Any]:
         return dict(
@@ -343,85 +188,26 @@ class RFGBoostRegressor(RegressorMixin, BaseEstimator):  # type: ignore[misc]
         y: ArrayLike,
         sample_weight: Optional[ArrayLike] = None,
     ) -> RFGBoostRegressor:
-        X_arr = np.asarray(X)
-        y_arr = np.ascontiguousarray(y, dtype=np.float64)
-        sw = (
-            np.ascontiguousarray(sample_weight, dtype=np.float64)
-            if sample_weight is not None
-            else None
-        )
-        cat_features = list(self.cat_features) if self.cat_features else None
-
-        if cat_features:
-            try:
-                from fastwoe import FastWoe
-            except ImportError as exc:
-                raise ImportError(
-                    "cat_features requires fastwoe-rs, which has no Pyodide/WASM "
-                    "wheel and so is unavailable in this environment (e.g. "
-                    "JupyterLite). It ships automatically with a normal install; "
-                    "otherwise run `pip install fastwoe-rs`."
-                ) from exc
-
-            y_binary = (y_arr > np.median(y_arr)).astype(int)
-            cat_rows = _to_cat_rows(X_arr, cat_features)
-            self._woe = FastWoe()
-            self._woe.fit_matrix(cat_rows, y_binary)
-            X_encoded = _encode_woe(self._woe, X_arr, cat_features)
-        else:
-            self._woe = None
-            X_encoded = np.ascontiguousarray(X_arr, dtype=np.float64)
-
+        y_arr = _f64(y)
+        sw = _f64(sample_weight) if sample_weight is not None else None
         self._model = _RustRegressor(**self._build_rust_params())
-        self._model.fit(
-            np.ascontiguousarray(X_encoded, dtype=np.float64),
-            y_arr,
-            sw,
-        )
+        self._model.fit(_f64(X), y_arr, sw)
         return self
 
     def predict(self, X: ArrayLike, device: str = "cpu") -> NDArray[np.float64]:
-        X_encoded = self._prepare_X(X)
-        return np.array(self._model.predict(X_encoded, device), dtype=np.float64)
+        return np.array(self._model.predict(_f64(X), device), dtype=np.float64)
 
     def predict_ci(self, X: ArrayLike, alpha: float = 0.05) -> NDArray[np.float64]:
-        X_encoded = self._prepare_X(X)
-        return np.array(self._model.predict_ci(X_encoded, alpha), dtype=np.float64)
+        return np.array(self._model.predict_ci(_f64(X), alpha), dtype=np.float64)
 
     def feature_importances(self) -> list[float]:
         return list(self._model.feature_importances())
 
-    def to_dict(self, n_features: Optional[int] = None) -> dict[str, Any]:
-        """Serialize the fitted model to a JSON-friendly dict.
-
-        WOE for regression uses median-binarized targets; if cat_features was
-        used, n_features (original column count) is required to recover the
-        numeric-column ordering.
-        """
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the fitted model to a JSON-friendly dict."""
         if not getattr(self, "_model", None) or not self._model.is_fitted:
             raise ValueError("RFGBoostRegressor has not been fitted")
-        d: dict[str, Any] = dict(self._model.to_dict())
-        if self.cat_features and self._woe is not None:
-            cat_features = list(self.cat_features)
-            if n_features is None:
-                raise ValueError(
-                    "n_features (original column count) is required when cat_features was used"
-                )
-            d["woe"] = _woe_bundle(
-                self._woe,
-                cat_features,
-                n_features,
-                multiclass=False,
-                n_classes=2,
-            )
-        return d
-
-    def _prepare_X(self, X: ArrayLike) -> NDArray[np.float64]:
-        if self.cat_features and self._woe is not None:
-            return np.ascontiguousarray(
-                _encode_woe(self._woe, X, self.cat_features), dtype=np.float64
-            )
-        return np.ascontiguousarray(X, dtype=np.float64)
+        return dict(self._model.to_dict())
 
     @property
     def is_fitted(self) -> bool:
