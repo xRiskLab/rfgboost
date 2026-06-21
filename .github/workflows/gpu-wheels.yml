@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write  # publish wheels to a GitHub release
 
 env:
   PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
@@ -71,3 +71,35 @@ jobs:
         with:
           name: gpu-wheels-windows-x64
           path: dist
+
+  release:
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: gpu-wheels-*
+          merge-multiple: true
+      - run: ls -la dist
+      - name: Publish wheels to the rolling GPU-wheels release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: gpu-wheels
+          name: GPU wheels (rolling, from main)
+          prerelease: true
+          make_latest: false
+          files: dist/*.whl
+          body: |
+            GPU-enabled rfgboost wheels — `wgpu` (Metal/Vulkan/DX12) + `cudarc`
+            (CUDA). Dynamic-loaded, so they also run on CPU-only machines
+            (`device="cuda"`/`"mps"` just errors gracefully when no GPU).
+
+            Built from `main`; updated on each manual run. Not on PyPI (a CPU and
+            GPU wheel collide on the same platform tag).
+
+            Install the wheel for your platform, e.g.:
+            ```
+            pip install https://github.com/xRiskLab/rfgboost/releases/download/gpu-wheels/<wheel-file>
+            ```
+            Then: `model.predict(X, device="cuda")` (NVIDIA) or `device="mps"` (Apple).
