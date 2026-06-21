@@ -31,6 +31,8 @@ pub struct RandomForestRegressor {
     // Lazily built once, reused across predict_cuda calls; reset on fit.
     #[cfg(feature = "cuda")]
     cuda_cache: std::cell::RefCell<Option<crate::cuda::CudaForest>>,
+    #[cfg(feature = "gpu")]
+    gpu_cache: std::cell::RefCell<Option<crate::gpu::GpuForest>>,
 }
 
 #[pymethods]
@@ -49,6 +51,8 @@ impl RandomForestRegressor {
             min_samples_split, min_samples_leaf, trees: Vec::new(), is_fitted: false,
             #[cfg(feature = "cuda")]
             cuda_cache: std::cell::RefCell::new(None),
+            #[cfg(feature = "gpu")]
+            gpu_cache: std::cell::RefCell::new(None),
         }
     }
 
@@ -102,48 +106,42 @@ impl RandomForestRegressor {
 
         #[cfg(feature = "cuda")]
         { *self.cuda_cache.borrow_mut() = None; }
+        #[cfg(feature = "gpu")]
+        { *self.gpu_cache.borrow_mut() = None; }
 
         self.is_fitted = true;
         Ok(())
     }
 
-    fn predict(&self, x: PyReadonlyArray2<f64>) -> PyResult<Vec<f64>> {
+    /// Predict on a chosen device. `device`: `"cpu"` (default), `"cuda"`
+    /// (NVIDIA, needs the `cuda` feature) or `"mps"`/`"metal"`/`"gpu"` (wgpu →
+    /// Metal on Apple, needs the `gpu` feature). Results match across devices to
+    /// f32 rounding. Requesting a device this wheel wasn't built for, or one
+    /// with no available hardware, raises a clear error.
+    #[pyo3(signature = (x, device="cpu"))]
+    fn predict(&self, x: PyReadonlyArray2<f64>, device: &str) -> PyResult<Vec<f64>> {
         if !self.is_fitted { return Err(PyValueError::new_err("RandomForestRegressor has not been fitted")); }
-        let x_arr = x.as_array();
-        let n_trees = self.trees.len() as f64;
-        let trees = &self.trees;
-        Ok(x_arr.outer_iter().collect::<Vec<_>>().into_par_iter()
-            .map(|row| {
-                let sample = row.as_slice().unwrap();
-                trees.iter().map(|tree| traverse(tree, sample)).sum::<f64>() / n_trees
-            })
-            .collect())
-    }
-
-    /// GPU-accelerated `predict` via the native CUDA backend (`cuda` feature).
-    /// Same result as `predict`; a throughput win for large batches.
-    #[cfg(feature = "cuda")]
-    fn predict_cuda(&self, x: PyReadonlyArray2<f64>) -> PyResult<Vec<f64>> {
-        if !self.is_fitted { return Err(PyValueError::new_err("RandomForestRegressor has not been fitted")); }
-        let x_arr = x.as_array();
-        let n = x_arr.nrows();
-        let nf = x_arr.ncols();
-        // row-major f32 copy (ndarray .iter() yields logical row-major order)
-        // f64->f32 is the dominant host cost at scale; parallelize it (rayon).
-        let xf: Vec<f32> = match x_arr.as_slice() {
-            Some(s) => s.par_iter().map(|&v| v as f32).collect(),
-            None => x_arr.iter().map(|&v| v as f32).collect(), // non-contiguous fallback
-        };
-        // Build the CUDA forest once (context + nvrtc kernel + upload) and reuse.
-        let mut cache = self.cuda_cache.borrow_mut();
-        if cache.is_none() {
-            *cache = Some(
-                crate::cuda::CudaForest::new(&self.trees, nf)
-                    .ok_or_else(|| PyValueError::new_err("CUDA device unavailable"))?,
-            );
+        match device {
+            "cpu" => {
+                let x_arr = x.as_array();
+                let n_trees = self.trees.len() as f64;
+                let trees = &self.trees;
+                Ok(x_arr.outer_iter().collect::<Vec<_>>().into_par_iter()
+                    .map(|row| {
+                        let sample = row.as_slice().unwrap();
+                        trees.iter().map(|tree| traverse(tree, sample)).sum::<f64>() / n_trees
+                    })
+                    .collect())
+            }
+            #[cfg(feature = "cuda")]
+            "cuda" => self.predict_cuda_impl(x),
+            #[cfg(feature = "gpu")]
+            "mps" | "metal" | "gpu" => self.predict_gpu_impl(x),
+            other => Err(PyValueError::new_err(format!(
+                "device '{}' is not available in this build. Available: {}.",
+                other, Self::available_devices()
+            ))),
         }
-        let out = cache.as_ref().unwrap().predict_avg(&xf, n);
-        Ok(out.into_iter().map(|v| v as f64).collect())
     }
 
     fn get_info(&self) -> PyResult<HashMap<String, usize>> {
@@ -155,6 +153,53 @@ impl RandomForestRegressor {
 
     #[getter] fn n_estimators(&self) -> usize { self.n_estimators }
     #[getter] fn is_fitted(&self) -> bool { self.is_fitted }
+}
+
+// Device backends behind `predict(device=...)` — not exposed as Python methods.
+impl RandomForestRegressor {
+    fn available_devices() -> String {
+        #[allow(unused_mut)]
+        let mut d = vec!["cpu"];
+        #[cfg(feature = "cuda")] d.push("cuda");
+        #[cfg(feature = "gpu")] d.push("mps");
+        d.join(", ")
+    }
+
+    #[cfg(feature = "cuda")]
+    fn predict_cuda_impl(&self, x: PyReadonlyArray2<f64>) -> PyResult<Vec<f64>> {
+        let x_arr = x.as_array();
+        let (n, nf) = (x_arr.nrows(), x_arr.ncols());
+        let xf: Vec<f32> = match x_arr.as_slice() {
+            Some(s) => s.par_iter().map(|&v| v as f32).collect(),
+            None => x_arr.iter().map(|&v| v as f32).collect(),
+        };
+        let mut cache = self.cuda_cache.borrow_mut();
+        if cache.is_none() {
+            *cache = Some(
+                crate::cuda::CudaForest::new(&self.trees, nf)
+                    .ok_or_else(|| PyValueError::new_err("CUDA device unavailable"))?,
+            );
+        }
+        Ok(cache.as_ref().unwrap().predict_avg(&xf, n).into_iter().map(|v| v as f64).collect())
+    }
+
+    #[cfg(feature = "gpu")]
+    fn predict_gpu_impl(&self, x: PyReadonlyArray2<f64>) -> PyResult<Vec<f64>> {
+        let x_arr = x.as_array();
+        let (n, nf) = (x_arr.nrows(), x_arr.ncols());
+        let xf: Vec<f32> = match x_arr.as_slice() {
+            Some(s) => s.par_iter().map(|&v| v as f32).collect(),
+            None => x_arr.iter().map(|&v| v as f32).collect(),
+        };
+        let mut cache = self.gpu_cache.borrow_mut();
+        if cache.is_none() {
+            *cache = Some(
+                crate::gpu::GpuForest::new(&self.trees, nf)
+                    .ok_or_else(|| PyValueError::new_err("GPU (wgpu) device unavailable"))?,
+            );
+        }
+        Ok(cache.as_ref().unwrap().predict_avg(&xf, n).into_iter().map(|v| v as f64).collect())
+    }
 }
 
 #[pyclass]
