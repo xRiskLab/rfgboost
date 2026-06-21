@@ -18,3 +18,11 @@ rand_pcg = "0.3"
 # sequential shim on emscripten (see src/par.rs).
 [target.'cfg(not(target_os = "emscripten"))'.dependencies]
 rayon = "1.10"
+# Optional GPU inference backend (wgpu -> Metal/Vulkan/DX12). Native-only and
+# OFF by default; enable with `--features gpu`. Never enabled for the wasm wheel.
+wgpu = { version = "29", optional = true }
+pollster = { version = "0.4", optional = true }
+bytemuck = { version = "1", optional = true, features = ["derive"] }
+
+[features]
+gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]

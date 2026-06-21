@@ -6,6 +6,8 @@ mod random_forest;
 mod tree_shap;
 mod boosting;
 mod unsupervised;
+#[cfg(feature = "gpu")]
+mod gpu;
 
 use pyo3::prelude::*;
 
