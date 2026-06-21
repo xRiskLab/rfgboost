@@ -186,3 +186,102 @@ impl CudaForest {
         self.stream.memcpy_dtov(&out).unwrap()
     }
 }
+
+// ----------------------------------------------------------------- TreeSHAP
+// Exact Shapley by 2^k coalition enumeration, one CUDA thread per sample;
+// `evaluate_coalition`'s recursion is an explicit per-thread weight-stack. f32.
+pub const SHAP_MAX_K: usize = 16;
+
+const SHAP_KERNEL: &str = r#"
+#define MAXD 64
+__device__ float eval_coalition(const float* x, int base, unsigned mask, int c, int nc,
+    const int* feat, const float* thr, const unsigned* nleft, const unsigned* nright,
+    const float* pL, const float* pR, const int* uidx, const float* leafval)
+{
+    unsigned sn[MAXD]; float sw[MAXD]; int sp = 0;
+    sn[0] = 0u; sw[0] = 1.0f; sp = 1;
+    float acc = 0.0f;
+    while (sp > 0) {
+        sp--; unsigned node = sn[sp]; float w = sw[sp];
+        int f = feat[node];
+        if (f < 0) { acc += w * leafval[node*nc + c]; }
+        else {
+            unsigned revealed = (mask >> (unsigned)uidx[node]) & 1u;
+            if (revealed) {
+                bool goleft = x[base + f] <= thr[node];
+                sn[sp] = goleft ? nleft[node] : nright[node]; sw[sp] = w; sp++;
+            } else {
+                sn[sp] = nleft[node];  sw[sp] = w * pL[node]; sp++;
+                sn[sp] = nright[node]; sw[sp] = w * pR[node]; sp++;
+            }
+        }
+    }
+    return acc;
+}
+
+extern "C" __global__ void shap(
+    const float* x, const int* feat, const float* thr, const unsigned* nleft, const unsigned* nright,
+    const float* pL, const float* pR, const int* uidx, const float* leafval, const unsigned* ufeat,
+    const float* fact, const int n_samples, const int n_features, const int n_classes, const int k, float* out)
+{
+    int s = blockIdx.x*blockDim.x + threadIdx.x;
+    if (s >= n_samples) return;
+    int base = s*n_features;
+    unsigned ncoal = 1u << k;
+    for (int c = 0; c < n_classes; c++) {
+        for (int jj = 0; jj < k; jj++) {
+            float contrib = 0.0f;
+            for (unsigned mask = 0; mask < ncoal; mask++) {
+                if ((mask >> jj) & 1u) continue;
+                float fs0 = eval_coalition(x, base, mask, c, n_classes, feat, thr, nleft, nright, pL, pR, uidx, leafval);
+                float fs1 = eval_coalition(x, base, mask | (1u << jj), c, n_classes, feat, thr, nleft, nright, pL, pR, uidx, leafval);
+                int ssize = __popc(mask);
+                float wgt = 1.0f;
+                if (k > 1) wgt = fact[ssize]*fact[k-ssize-1]/fact[k];
+                contrib += wgt*(fs1 - fs0);
+            }
+            out[(s*n_classes + c)*n_features + ufeat[jj]] = contrib;
+        }
+    }
+}
+"#;
+
+/// One CUDA thread per sample; returns `n_samples * n_classes * n_features` f32
+/// SHAP values (row-major). `None` if `k > SHAP_MAX_K` or CUDA unavailable.
+#[allow(clippy::too_many_arguments)]
+pub fn shap_explain(
+    x: &[f32], n_samples: usize, n_features: usize, n_classes: usize, k: usize,
+    feat: &[i32], thr: &[f32], left: &[u32], right: &[u32], pl: &[f32], pr: &[f32],
+    uidx: &[i32], leafval: &[f32], ufeat: &[u32], fact: &[f32],
+) -> Option<Vec<f32>> {
+    if k > SHAP_MAX_K {
+        return None;
+    }
+    let ctx = CudaContext::new(0).ok()?;
+    let stream = ctx.default_stream();
+    let func = ctx.load_module(compile_ptx(SHAP_KERNEL).ok()?).ok()?.load_function("shap").ok()?;
+
+    let d_x = stream.memcpy_stod(x).ok()?;
+    let d_feat = stream.memcpy_stod(feat).ok()?;
+    let d_thr = stream.memcpy_stod(thr).ok()?;
+    let d_left = stream.memcpy_stod(left).ok()?;
+    let d_right = stream.memcpy_stod(right).ok()?;
+    let d_pl = stream.memcpy_stod(pl).ok()?;
+    let d_pr = stream.memcpy_stod(pr).ok()?;
+    let d_uidx = stream.memcpy_stod(uidx).ok()?;
+    let d_leaf = stream.memcpy_stod(leafval).ok()?;
+    let d_ufeat = stream.memcpy_stod(ufeat).ok()?;
+    let d_fact = stream.memcpy_stod(fact).ok()?;
+    let out_len = n_samples * n_classes * n_features;
+    let mut d_out = stream.alloc_zeros::<f32>(out_len).ok()?;
+    let (ns, nf, nc, kk) = (n_samples as i32, n_features as i32, n_classes as i32, k as i32);
+
+    let cfg = LaunchConfig::for_num_elems(n_samples as u32);
+    let mut b = stream.launch_builder(&func);
+    b.arg(&d_x).arg(&d_feat).arg(&d_thr).arg(&d_left).arg(&d_right).arg(&d_pl).arg(&d_pr)
+        .arg(&d_uidx).arg(&d_leaf).arg(&d_ufeat).arg(&d_fact)
+        .arg(&ns).arg(&nf).arg(&nc).arg(&kk).arg(&mut d_out);
+    unsafe { b.launch(cfg).ok()?; }
+    stream.synchronize().ok()?;
+    stream.memcpy_dtov(&d_out).ok()
+}

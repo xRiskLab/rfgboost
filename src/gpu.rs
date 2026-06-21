@@ -288,6 +288,211 @@ impl GpuForest {
     }
 }
 
+// ----------------------------------------------------------------- TreeSHAP
+// Exact Shapley by 2^k coalition enumeration, one GPU thread per sample. The
+// recursive `evaluate_coalition` (hidden feature -> weight both children) is an
+// explicit weight-stack. Caller flattens the SHAP tree to SoA. f32.
+pub const SHAP_MAX_K: usize = 16;
+const SHAP_MAX_DEPTH: u32 = 64;
+
+const SHAP_SHADER: &str = r#"
+struct P { n_samples:u32, n_features:u32, n_classes:u32, k:u32 };
+@group(0) @binding(0) var<storage, read> features: array<f32>;
+@group(0) @binding(1) var<storage, read> feat: array<i32>;
+@group(0) @binding(2) var<storage, read> thr: array<f32>;
+@group(0) @binding(3) var<storage, read> nleft: array<u32>;
+@group(0) @binding(4) var<storage, read> nright: array<u32>;
+@group(0) @binding(5) var<storage, read> pL: array<f32>;
+@group(0) @binding(6) var<storage, read> pR: array<f32>;
+@group(0) @binding(7) var<storage, read> uidx: array<i32>;
+@group(0) @binding(8) var<storage, read> leafval: array<f32>;
+@group(0) @binding(9) var<storage, read> ufeat: array<u32>;
+@group(0) @binding(10) var<storage, read> fact: array<f32>;
+@group(0) @binding(11) var<storage, read_write> out: array<f32>;
+@group(0) @binding(12) var<uniform> params: P;
+
+fn eval_coalition(s: u32, mask: u32, c: u32) -> f32 {
+    var sn: array<u32, 64>;
+    var sw: array<f32, 64>;
+    sn[0] = 0u; sw[0] = 1.0;
+    var sp = 1u;
+    var acc = 0.0;
+    let nc = params.n_classes;
+    let base = s * params.n_features;
+    loop {
+        if (sp == 0u) { break; }
+        sp = sp - 1u;
+        let node = sn[sp];
+        let w = sw[sp];
+        let f = feat[node];
+        if (f < 0) {
+            acc = acc + w * leafval[node * nc + c];
+        } else {
+            let revealed = (mask >> u32(uidx[node])) & 1u;
+            if (revealed == 1u) {
+                let goleft = features[base + u32(f)] <= thr[node];
+                sn[sp] = select(nright[node], nleft[node], goleft);
+                sw[sp] = w;
+                sp = sp + 1u;
+            } else {
+                sn[sp] = nleft[node]; sw[sp] = w * pL[node]; sp = sp + 1u;
+                sn[sp] = nright[node]; sw[sp] = w * pR[node]; sp = sp + 1u;
+            }
+        }
+    }
+    return acc;
+}
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let s = gid.x;
+    if (s >= params.n_samples) { return; }
+    let k = params.k;
+    let nc = params.n_classes;
+    let nf = params.n_features;
+    let ncoal = 1u << k;
+    for (var c = 0u; c < nc; c = c + 1u) {
+        for (var jj = 0u; jj < k; jj = jj + 1u) {
+            var contrib = 0.0;
+            for (var mask = 0u; mask < ncoal; mask = mask + 1u) {
+                if (((mask >> jj) & 1u) == 1u) { continue; }
+                let fs0 = eval_coalition(s, mask, c);
+                let fs1 = eval_coalition(s, mask | (1u << jj), c);
+                let ssize = countOneBits(mask);
+                var wgt = 1.0;
+                if (k > 1u) { wgt = fact[ssize] * fact[k - ssize - 1u] / fact[k]; }
+                contrib = contrib + wgt * (fs1 - fs0);
+            }
+            out[(s * nc + c) * nf + ufeat[jj]] = contrib;
+        }
+    }
+}
+"#;
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ShapParams {
+    n_samples: u32,
+    n_features: u32,
+    n_classes: u32,
+    k: u32,
+}
+
+/// One GPU thread per sample; returns `n_samples * n_classes * n_features` f32
+/// SHAP values (row-major). `None` if `k > SHAP_MAX_K` or no adapter.
+#[allow(clippy::too_many_arguments)]
+pub fn shap_explain(
+    x: &[f32], n_samples: usize, n_features: usize, n_classes: usize, k: usize,
+    feat: &[i32], thr: &[f32], left: &[u32], right: &[u32], pl: &[f32], pr: &[f32],
+    uidx: &[i32], leafval: &[f32], ufeat: &[u32], fact: &[f32],
+) -> Option<Vec<f32>> {
+    if k > SHAP_MAX_K || (SHAP_MAX_DEPTH as usize) < 1 {
+        return None;
+    }
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..Default::default()
+    }))
+    .ok()?;
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        label: Some("rfgboost-shap"),
+        required_limits: adapter.limits(), // SHAP needs >8 storage buffers
+        ..Default::default()
+    }))
+    .ok()?;
+
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("shap"),
+        source: wgpu::ShaderSource::Wgsl(SHAP_SHADER.into()),
+    });
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("shap"),
+        layout: None,
+        module: &shader,
+        entry_point: Some("main"),
+        compilation_options: wgpu::PipelineCompilationOptions::default(),
+        cache: None,
+    });
+
+    let mk = |bytes: &[u8]| {
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        })
+    };
+    let out_len = n_samples * n_classes * n_features;
+    let out_size = (out_len * 4) as u64;
+    let b_out = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("out"),
+        size: out_size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let staging = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("staging"),
+        size: out_size,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let params = ShapParams {
+        n_samples: n_samples as u32,
+        n_features: n_features as u32,
+        n_classes: n_classes as u32,
+        k: k as u32,
+    };
+    let b_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("params"),
+        contents: bytemuck::bytes_of(&params),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+
+    let b = [
+        mk(bytemuck::cast_slice(x)),
+        mk(bytemuck::cast_slice(feat)),
+        mk(bytemuck::cast_slice(thr)),
+        mk(bytemuck::cast_slice(left)),
+        mk(bytemuck::cast_slice(right)),
+        mk(bytemuck::cast_slice(pl)),
+        mk(bytemuck::cast_slice(pr)),
+        mk(bytemuck::cast_slice(uidx)),
+        mk(bytemuck::cast_slice(leafval)),
+        mk(bytemuck::cast_slice(ufeat)),
+        mk(bytemuck::cast_slice(fact)),
+    ];
+    let bgl = pipeline.get_bind_group_layout(0);
+    let mut entries: Vec<wgpu::BindGroupEntry> = b
+        .iter()
+        .enumerate()
+        .map(|(i, buf)| wgpu::BindGroupEntry { binding: i as u32, resource: buf.as_entire_binding() })
+        .collect();
+    entries.push(wgpu::BindGroupEntry { binding: 11, resource: b_out.as_entire_binding() });
+    entries.push(wgpu::BindGroupEntry { binding: 12, resource: b_params.as_entire_binding() });
+    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &bgl, entries: &entries });
+
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    {
+        let mut cpass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        cpass.set_pipeline(&pipeline);
+        cpass.set_bind_group(0, &bg, &[]);
+        cpass.dispatch_workgroups(((n_samples + 63) / 64) as u32, 1, 1);
+    }
+    enc.copy_buffer_to_buffer(&b_out, 0, &staging, 0, out_size);
+    queue.submit(Some(enc.finish()));
+
+    let slice = staging.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    rx.recv().unwrap().unwrap();
+    let data = slice.get_mapped_range();
+    let out: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
+    drop(data);
+    staging.unmap();
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

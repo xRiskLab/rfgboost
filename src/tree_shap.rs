@@ -138,28 +138,139 @@ impl TreeSHAP {
         Ok(shap)
     }
 
-    fn explain(&self, x: PyReadonlyArray2<f64>) -> PyResult<Vec<Vec<Vec<f64>>>> {
+    /// SHAP values, shape `[n_samples][n_classes][n_features]`. `device`: "cpu"
+    /// (default), "cuda" or "mps"/"metal"/"gpu". GPU parallelizes over samples;
+    /// trees with more than SHAP_MAX_K unique features fall back to CPU.
+    #[pyo3(signature = (x, device="cpu"))]
+    fn explain(&self, x: PyReadonlyArray2<f64>, device: &str) -> PyResult<Vec<Vec<Vec<f64>>>> {
         let x_arr = x.as_array();
-        let n_samples = x_arr.nrows();
-
-        if self.model_type == "classification" {
-            let mut result = Vec::with_capacity(n_samples);
-            for i in 0..n_samples {
-                let row = x_arr.row(i);
-                let sample_slice = row.as_slice().unwrap();
-                let mut per_class = Vec::with_capacity(self.n_classes);
-                for c in 0..self.n_classes { per_class.push(self.explain_single_class(sample_slice, c)); }
-                result.push(per_class);
-            }
-            Ok(result)
-        } else {
-            let mut result = Vec::with_capacity(n_samples);
-            for i in 0..n_samples {
-                let row = x_arr.row(i);
-                let sample_slice = row.as_slice().unwrap();
-                result.push(vec![self.explain_single_class(sample_slice, 0)]);
-            }
-            Ok(result)
+        match device {
+            "cpu" => Ok(self.explain_cpu(&x_arr)),
+            #[cfg(feature = "cuda")]
+            "cuda" => self.explain_device(&x_arr, Backend::Cuda),
+            #[cfg(feature = "gpu")]
+            "mps" | "metal" | "gpu" => self.explain_device(&x_arr, Backend::Wgpu),
+            other => Err(PyValueError::new_err(format!(
+                "device '{}' is not available in this build. Available: {}.", other, shap_devices()))),
         }
+    }
+}
+
+fn shap_devices() -> String {
+    #[allow(unused_mut)]
+    let mut d = vec!["cpu"];
+    #[cfg(feature = "cuda")] d.push("cuda");
+    #[cfg(feature = "gpu")] d.push("mps");
+    d.join(", ")
+}
+
+impl TreeSHAP {
+    fn explain_cpu(&self, x_arr: &ndarray::ArrayView2<f64>) -> Vec<Vec<Vec<f64>>> {
+        let n_samples = x_arr.nrows();
+        let n_out = if self.model_type == "classification" { self.n_classes } else { 1 };
+        (0..n_samples)
+            .map(|i| {
+                let row = x_arr.row(i);
+                let s = row.as_slice().unwrap();
+                (0..n_out).map(|c| self.explain_single_class(s, c)).collect()
+            })
+            .collect()
+    }
+}
+
+#[cfg(any(feature = "cuda", feature = "gpu"))]
+enum Backend {
+    #[cfg(feature = "cuda")]
+    Cuda,
+    #[cfg(feature = "gpu")]
+    Wgpu,
+}
+
+#[cfg(any(feature = "cuda", feature = "gpu"))]
+struct ShapFlat {
+    feat: Vec<i32>, thr: Vec<f32>, left: Vec<u32>, right: Vec<u32>,
+    pl: Vec<f32>, pr: Vec<f32>, uidx: Vec<i32>, leafval: Vec<f32>,
+    ufeat: Vec<u32>, fact: Vec<f32>, k: usize,
+}
+
+#[cfg(any(feature = "cuda", feature = "gpu"))]
+fn flatten_shap(node: &SHAPNode, a: &mut ShapFlat, ufeat: &[usize], nc: usize) -> u32 {
+    let id = a.feat.len() as u32;
+    a.feat.push(0); a.thr.push(0.0); a.left.push(0); a.right.push(0);
+    a.pl.push(0.0); a.pr.push(0.0); a.uidx.push(-1);
+    let base = a.leafval.len();
+    a.leafval.resize(base + nc, 0.0);
+    if node.is_leaf {
+        a.feat[id as usize] = -1;
+        let vlen = node.value.len();
+        for c in 0..nc { a.leafval[base + c] = node.value[c.min(vlen.saturating_sub(1))] as f32; }
+    } else {
+        a.feat[id as usize] = node.feature as i32;
+        a.thr[id as usize] = node.threshold as f32;
+        let n = node.samples as f32;
+        a.pl[id as usize] = if n > 0.0 { node.left_samples as f32 / n } else { 0.5 };
+        a.pr[id as usize] = if n > 0.0 { node.right_samples as f32 / n } else { 0.5 };
+        a.uidx[id as usize] = ufeat.iter().position(|&f| f == node.feature).unwrap() as i32;
+        let l = flatten_shap(node.left.as_deref().unwrap(), a, ufeat, nc);
+        let r = flatten_shap(node.right.as_deref().unwrap(), a, ufeat, nc);
+        a.left[id as usize] = l;
+        a.right[id as usize] = r;
+    }
+    id
+}
+
+#[cfg(any(feature = "cuda", feature = "gpu"))]
+impl TreeSHAP {
+    fn flatten_for_gpu(&self) -> Option<ShapFlat> {
+        let root = self.root.as_deref()?;
+        let mut ufeat_us: Vec<usize> = Vec::new();
+        Self::collect_tree_features(root, &mut ufeat_us);
+        let k = ufeat_us.len();
+        let mut a = ShapFlat {
+            feat: vec![], thr: vec![], left: vec![], right: vec![], pl: vec![], pr: vec![],
+            uidx: vec![], leafval: vec![], ufeat: ufeat_us.iter().map(|&f| f as u32).collect(),
+            fact: vec![], k,
+        };
+        flatten_shap(root, &mut a, &ufeat_us, self.n_classes.max(1));
+        let mut fact = vec![1.0f32; k + 1];
+        for i in 1..=k { fact[i] = fact[i - 1] * i as f32; }
+        a.fact = fact;
+        Some(a)
+    }
+
+    fn explain_device(&self, x_arr: &ndarray::ArrayView2<f64>, backend: Backend) -> PyResult<Vec<Vec<Vec<f64>>>> {
+        let n = x_arr.nrows();
+        let nf = self.n_features;
+        let nc = if self.model_type == "classification" { self.n_classes } else { 1 };
+        let flat = match self.flatten_for_gpu() {
+            Some(f) => f,
+            None => return Ok(self.explain_cpu(x_arr)),
+        };
+        let xf: Vec<f32> = x_arr.iter().map(|&v| v as f32).collect();
+        let out = match backend {
+            #[cfg(feature = "cuda")]
+            Backend::Cuda => crate::cuda::shap_explain(
+                &xf, n, nf, nc, flat.k, &flat.feat, &flat.thr, &flat.left, &flat.right,
+                &flat.pl, &flat.pr, &flat.uidx, &flat.leafval, &flat.ufeat, &flat.fact),
+            #[cfg(feature = "gpu")]
+            Backend::Wgpu => crate::gpu::shap_explain(
+                &xf, n, nf, nc, flat.k, &flat.feat, &flat.thr, &flat.left, &flat.right,
+                &flat.pl, &flat.pr, &flat.uidx, &flat.leafval, &flat.ufeat, &flat.fact),
+        };
+        // k too large for the GPU kernel, or no device -> CPU fallback.
+        let out = match out {
+            Some(o) => o,
+            None => return Ok(self.explain_cpu(x_arr)),
+        };
+        Ok((0..n)
+            .map(|s| {
+                (0..nc)
+                    .map(|c| {
+                        let off = (s * nc + c) * nf;
+                        out[off..off + nf].iter().map(|&v| v as f64).collect()
+                    })
+                    .collect()
+            })
+            .collect())
     }
 }
