@@ -177,8 +177,10 @@ class RFGBoostClassifier(ClassifierMixin, BaseEstimator):  # type: ignore[misc]
                 from fastwoe import FastWoe
             except ImportError as exc:
                 raise ImportError(
-                    "cat_features requires fastwoe-rs. Install it with "
-                    "`pip install 'rfgboost[categorical]'` (or `pip install fastwoe-rs`)."
+                    "cat_features requires fastwoe-rs, which has no Pyodide/WASM "
+                    "wheel and so is unavailable in this environment (e.g. "
+                    "JupyterLite). It ships automatically with a normal install; "
+                    "otherwise run `pip install fastwoe-rs`."
                 ) from exc
 
             cat_rows = _to_cat_rows(X_arr, cat_features)
@@ -355,8 +357,10 @@ class RFGBoostRegressor(RegressorMixin, BaseEstimator):  # type: ignore[misc]
                 from fastwoe import FastWoe
             except ImportError as exc:
                 raise ImportError(
-                    "cat_features requires fastwoe-rs. Install it with "
-                    "`pip install 'rfgboost[categorical]'` (or `pip install fastwoe-rs`)."
+                    "cat_features requires fastwoe-rs, which has no Pyodide/WASM "
+                    "wheel and so is unavailable in this environment (e.g. "
+                    "JupyterLite). It ships automatically with a normal install; "
+                    "otherwise run `pip install fastwoe-rs`."
                 ) from exc
 
             y_binary = (y_arr > np.median(y_arr)).astype(int)

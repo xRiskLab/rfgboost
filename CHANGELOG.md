@@ -10,8 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.2] - 2026-06-16
 
 ### Changed
-- `fastwoe-rs` is now an **optional** dependency (the `categorical` extra) instead of a core one. It is only needed for the `cat_features` WOE path, so the core package installs without it — including in Pyodide/JupyterLite, where `micropip.install("rfgboost")` now works by name. Install `rfgboost[categorical]` (or `fastwoe-rs`) to use `cat_features`; it raises a clear error otherwise.
-- The Pyodide WASM wheel is now published to PyPI automatically on tag.
+- `fastwoe-rs` (which powers the categorical `cat_features` WOE path) now carries an environment marker: it still installs automatically with a normal `pip install rfgboost`, but is excluded on Pyodide/WASM (`sys_platform == 'emscripten'`), where it has no wheel. This lets `micropip.install("rfgboost")` resolve by name in JupyterLite; using `cat_features` there raises a clear error.
+- The Pyodide WASM wheel is now built and published by the main release workflow on tag (emscripten 4.0.9 / build-std), replacing the standalone `pyodide-wheel.yml`.
 
 ## [0.1.1] - 2026-06-16
 

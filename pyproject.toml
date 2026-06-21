@@ -22,6 +22,10 @@ keywords = [
 dependencies = [
     "numpy>=1.21.0",
     "scikit-learn>=1.0.0",
+    # Powers the categorical (cat_features) WOE path. Installed automatically
+    # everywhere except Pyodide/WASM, which has no fastwoe-rs wheel — excluding
+    # it there lets micropip.install("rfgboost") resolve by name.
+    "fastwoe-rs>=0.1.0; sys_platform != 'emscripten'",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -41,11 +45,6 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-# fastwoe-rs powers the categorical (cat_features) WOE path. Optional so the
-# core package installs without it (e.g. in Pyodide, where it has no wheel).
-categorical = [
-    "fastwoe-rs>=0.1.0",
-]
 test = [
     "scikit-learn>=1.0.0",
     "pytest>=7.0.0",
