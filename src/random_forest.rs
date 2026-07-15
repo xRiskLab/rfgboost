@@ -14,6 +14,140 @@ use crate::tree::{
     build_tree_on_bootstrap, resolve_max_features, traverse, traverse_proba, TreeConfig, TreeNode,
 };
 
+/// Wilson score interval `(lo, hi)` for proportion `p` over `n` trials at `z`.
+fn wilson(p: f64, n: f64, z: f64) -> (f64, f64) {
+    let z2 = z * z;
+    let denom = 1.0 + z2 / n;
+    let center = (p + z2 / (2.0 * n)) / denom;
+    let half = z * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt() / denom;
+    ((center - half).max(0.0), (center + half).min(1.0))
+}
+
+/// Build a forest from precomputed `(bootstrap, seed)` params with async early
+/// stopping: trees are added until predictions are confident — classification:
+/// the top-2 class-vote Wilson CIs separate for >= `conf_target` of samples;
+/// regression: the per-sample prediction CI half-width is small (or, if
+/// `tol > 0`, the per-sample mean change drops below `tol`) — or all params are
+/// used. Parallel (a converged flag lets not-yet-started trees skip); the number
+/// of trees kept is the return length.
+#[allow(clippy::too_many_arguments)]
+fn build_forest_streaming(
+    x: &ndarray::ArrayView2<f64>,
+    y: &[f64],
+    w: &[f64],
+    tree_params: &[(Vec<usize>, u64)],
+    config: &TreeConfig,
+    hist: &HistogramData,
+    tol: f64,
+    min_trees: usize,
+    conf_target: f64,
+    is_classification: bool,
+    n_classes: usize,
+) -> Vec<TreeNode> {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    let n_samples = x.nrows();
+    let nc = n_classes.max(1);
+    let x_owned = x.to_owned();
+
+    let converged = AtomicBool::new(false);
+    let n_collected = AtomicUsize::new(0);
+    let collector: Mutex<Vec<(usize, TreeNode)>> = Mutex::new(Vec::with_capacity(tree_params.len()));
+    let votes: Mutex<Vec<f64>> = Mutex::new(vec![0.0; n_samples * nc]);
+    let wmean: Mutex<Vec<f64>> = Mutex::new(vec![0.0; n_samples]);
+    let wm2: Mutex<Vec<f64>> = Mutex::new(vec![0.0; n_samples]);
+
+    scope(|s| {
+        for (idx, (boot, seed)) in tree_params.iter().enumerate() {
+            let seed = *seed;
+            let converged = &converged;
+            let n_collected = &n_collected;
+            let collector = &collector;
+            let votes = &votes;
+            let wmean = &wmean;
+            let wm2 = &wm2;
+            let x_ref = &x_owned;
+            s.spawn(move |_| {
+                if converged.load(Ordering::Relaxed) { return; }
+                let mut tree_rng = Pcg64::seed_from_u64(seed);
+                let tree = build_tree_on_bootstrap(&x_ref.view(), y, w, boot, config, &mut tree_rng, hist);
+                if converged.load(Ordering::Relaxed) { return; }
+
+                let preds: Vec<f64> = x_ref
+                    .view()
+                    .outer_iter()
+                    .map(|row| traverse(&tree, row.as_slice().unwrap()))
+                    .collect();
+
+                {
+                    let c = n_collected.fetch_add(1, Ordering::SeqCst) + 1;
+                    let cf = c as f64;
+                    let z = 1.96_f64;
+                    let mut stop = false;
+                    if is_classification {
+                        let mut v = votes.lock().unwrap();
+                        for i in 0..n_samples {
+                            let cls = (preds[i] as usize).min(nc - 1);
+                            v[i * nc + cls] += 1.0;
+                        }
+                        if c >= min_trees && c > 1 {
+                            let mut n_stable = 0usize;
+                            for i in 0..n_samples {
+                                let (mut p1, mut p2) = (0.0f64, 0.0f64);
+                                for k in 0..nc {
+                                    let pk = v[i * nc + k] / cf;
+                                    if pk > p1 { p2 = p1; p1 = pk; } else if pk > p2 { p2 = pk; }
+                                }
+                                let (lo1, _) = wilson(p1, cf, z);
+                                let (_, hi2) = wilson(p2, cf, z);
+                                if lo1 > hi2 { n_stable += 1; }
+                            }
+                            stop = n_stable as f64 / n_samples as f64 >= conf_target;
+                        }
+                    } else {
+                        let mut mean = wmean.lock().unwrap();
+                        let mut m2 = wm2.lock().unwrap();
+                        for i in 0..n_samples {
+                            let delta = preds[i] - mean[i];
+                            mean[i] += delta / cf;
+                            let delta2 = preds[i] - mean[i];
+                            m2[i] += delta * delta2;
+                        }
+                        if c >= min_trees && c > 1 {
+                            if tol > 0.0 {
+                                let max_change = (0..n_samples)
+                                    .map(|i| {
+                                        let prev = (mean[i] * cf - preds[i]) / (cf - 1.0);
+                                        (preds[i] - prev).abs() / cf
+                                    })
+                                    .fold(0.0, f64::max);
+                                stop = max_change < tol;
+                            } else {
+                                let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+                                for i in 0..n_samples { lo = lo.min(mean[i]); hi = hi.max(mean[i]); }
+                                let threshold = 0.05 * (hi - lo).max(1e-10);
+                                let mut n_stable = 0usize;
+                                for i in 0..n_samples {
+                                    let var = if c > 1 { m2[i] / (cf - 1.0) } else { 0.0 };
+                                    if z * (var / cf).sqrt() < threshold { n_stable += 1; }
+                                }
+                                stop = n_stable as f64 / n_samples as f64 >= conf_target;
+                            }
+                        }
+                    }
+                    if stop { converged.store(true, Ordering::SeqCst); }
+                }
+                collector.lock().unwrap().push((idx, tree));
+            });
+        }
+    });
+
+    let mut results = collector.into_inner().unwrap();
+    results.sort_by_key(|(idx, _)| *idx);
+    results.into_iter().map(|(_, t)| t).collect()
+}
+
 // With the `cuda` feature the struct holds a CUDA context (thread-affine), so
 // the pyclass is `unsendable` there; default/wasm builds stay plain `#[pyclass]`.
 #[cfg_attr(feature = "cuda", pyclass(unsendable))]
@@ -26,7 +160,10 @@ pub struct RandomForestRegressor {
     random_state: Option<u64>,
     min_samples_split: usize,
     min_samples_leaf: usize,
+    async_mode: bool,
+    tol: f64,
     trees: Vec<TreeNode>,
+    trees_used: usize,
     is_fitted: bool,
     // Lazily built once, reused across predict_cuda calls; reset on fit.
     #[cfg(feature = "cuda")]
@@ -40,15 +177,18 @@ impl RandomForestRegressor {
     #[new]
     #[pyo3(signature = (
         n_estimators=50, max_depth=None, max_features=None,
-        bootstrap=true, random_state=None, min_samples_split=2, min_samples_leaf=1
+        bootstrap=true, random_state=None, min_samples_split=2, min_samples_leaf=1,
+        async_mode=false, tol=0.0
     ))]
     fn new(
         n_estimators: usize, max_depth: Option<usize>, max_features: Option<String>,
         bootstrap: bool, random_state: Option<u64>, min_samples_split: usize, min_samples_leaf: usize,
+        async_mode: bool, tol: f64,
     ) -> Self {
         Self {
             n_estimators, max_depth, max_features, bootstrap, random_state,
-            min_samples_split, min_samples_leaf, trees: Vec::new(), is_fitted: false,
+            min_samples_split, min_samples_leaf, async_mode, tol,
+            trees: Vec::new(), trees_used: 0, is_fitted: false,
             #[cfg(feature = "cuda")]
             cuda_cache: std::cell::RefCell::new(None),
             #[cfg(feature = "gpu")]
@@ -96,13 +236,20 @@ impl RandomForestRegressor {
         let x_owned = x_arr.to_owned();
         let global_hist = HistogramData::build(&x_owned.view(), n_samples, n_features);
 
-        self.trees = tree_params
-            .into_par_iter()
-            .map(|(boot, seed)| {
-                let mut tree_rng = Pcg64::seed_from_u64(seed);
-                build_tree_on_bootstrap(&x_owned.view(), &y_vec, &weights, &boot, &config, &mut tree_rng, &global_hist)
-            })
-            .collect();
+        let min_trees = (self.n_estimators / 10).max(3);
+        self.trees = if self.async_mode {
+            build_forest_streaming(&x_owned.view(), &y_vec, &weights, &tree_params, &config,
+                &global_hist, self.tol, min_trees, 0.90, false, 1)
+        } else {
+            tree_params
+                .into_par_iter()
+                .map(|(boot, seed)| {
+                    let mut tree_rng = Pcg64::seed_from_u64(seed);
+                    build_tree_on_bootstrap(&x_owned.view(), &y_vec, &weights, &boot, &config, &mut tree_rng, &global_hist)
+                })
+                .collect()
+        };
+        self.trees_used = self.trees.len();
 
         #[cfg(feature = "cuda")]
         { *self.cuda_cache.borrow_mut() = None; }
@@ -153,6 +300,8 @@ impl RandomForestRegressor {
 
     #[getter] fn n_estimators(&self) -> usize { self.n_estimators }
     #[getter] fn is_fitted(&self) -> bool { self.is_fitted }
+    /// Trees actually built — < n_estimators when async_mode stopped early.
+    #[getter] fn trees_used(&self) -> usize { self.trees_used }
 }
 
 // Device backends behind `predict(device=...)` — not exposed as Python methods.
@@ -212,7 +361,10 @@ pub struct RandomForestClassifier {
     random_state: Option<u64>,
     min_samples_split: usize,
     min_samples_leaf: usize,
+    async_mode: bool,
+    tol: f64,
     trees: Vec<TreeNode>,
+    trees_used: usize,
     n_classes: usize,
     classes_: Option<Vec<usize>>,
     is_fitted: bool,
@@ -227,15 +379,18 @@ impl RandomForestClassifier {
     #[new]
     #[pyo3(signature = (
         n_estimators=100, max_depth=None, max_features=None,
-        bootstrap=true, random_state=None, min_samples_split=2, min_samples_leaf=1
+        bootstrap=true, random_state=None, min_samples_split=2, min_samples_leaf=1,
+        async_mode=false, tol=0.0
     ))]
     fn new(
         n_estimators: usize, max_depth: Option<usize>, max_features: Option<String>,
         bootstrap: bool, random_state: Option<u64>, min_samples_split: usize, min_samples_leaf: usize,
+        async_mode: bool, tol: f64,
     ) -> Self {
         Self {
             n_estimators, max_depth, max_features, bootstrap, random_state,
-            min_samples_split, min_samples_leaf, trees: Vec::new(), n_classes: 0,
+            min_samples_split, min_samples_leaf, async_mode, tol,
+            trees: Vec::new(), trees_used: 0, n_classes: 0,
             classes_: None, is_fitted: false,
             #[cfg(feature = "cuda")]
             cuda_cache: std::cell::RefCell::new(None),
@@ -291,13 +446,20 @@ impl RandomForestClassifier {
         let x_owned = x_arr.to_owned();
         let global_hist = HistogramData::build(&x_owned.view(), n_samples, n_features);
 
-        self.trees = tree_params
-            .into_par_iter()
-            .map(|(boot, seed)| {
-                let mut tree_rng = Pcg64::seed_from_u64(seed);
-                build_tree_on_bootstrap(&x_owned.view(), &y_vec, &weights, &boot, &config, &mut tree_rng, &global_hist)
-            })
-            .collect();
+        let min_trees = (self.n_estimators / 10).max(3);
+        self.trees = if self.async_mode {
+            build_forest_streaming(&x_owned.view(), &y_vec, &weights, &tree_params, &config,
+                &global_hist, self.tol, min_trees, 0.90, true, self.n_classes)
+        } else {
+            tree_params
+                .into_par_iter()
+                .map(|(boot, seed)| {
+                    let mut tree_rng = Pcg64::seed_from_u64(seed);
+                    build_tree_on_bootstrap(&x_owned.view(), &y_vec, &weights, &boot, &config, &mut tree_rng, &global_hist)
+                })
+                .collect()
+        };
+        self.trees_used = self.trees.len();
 
         #[cfg(feature = "cuda")]
         { *self.cuda_cache.borrow_mut() = None; }
@@ -345,6 +507,8 @@ impl RandomForestClassifier {
     #[getter] fn n_classes(&self) -> usize { self.n_classes }
     #[getter] fn classes_(&self) -> Option<Vec<usize>> { self.classes_.clone() }
     #[getter] fn is_fitted(&self) -> bool { self.is_fitted }
+    /// Trees actually built — < n_estimators when async_mode stopped early.
+    #[getter] fn trees_used(&self) -> usize { self.trees_used }
 }
 
 // Leaf -> class-probability vector (matches traverse_proba): out[cls] = count/total.
