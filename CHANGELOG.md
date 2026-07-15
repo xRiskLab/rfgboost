@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-15
+
 ### Added
 - Optional, off-by-default **GPU acceleration** across the predict/explain API via a `device=` argument:
   - `device="cuda"` — native CUDA (cudarc + nvrtc, `cuda` Cargo feature, NVIDIA).
@@ -53,5 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Split conformal prediction intervals for regression.
 - Categorical feature support via WOE encoding (`fastwoe-rs`).
 
-[Unreleased]: https://github.com/xRiskLab/rfgboost/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/xRiskLab/rfgboost/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/xRiskLab/rfgboost/compare/v0.1.2...v0.2.0
+[0.1.2]: https://github.com/xRiskLab/rfgboost/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/xRiskLab/rfgboost/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/xRiskLab/rfgboost/releases/tag/v0.1.0
