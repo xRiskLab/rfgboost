@@ -264,6 +264,7 @@ impl RandomForestRegressor {
             } else {
                 None
             },
+            monotone_constraints: Vec::new(),
         };
 
         let tree_params: Vec<(Vec<usize>, u64)> = (0..self.n_estimators)
@@ -559,6 +560,7 @@ impl RandomForestClassifier {
             } else {
                 None
             },
+            monotone_constraints: Vec::new(),
         };
 
         let tree_params: Vec<(Vec<usize>, u64)> = (0..self.n_estimators)

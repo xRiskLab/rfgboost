@@ -616,6 +616,7 @@ pub struct RFGBoostClassifier {
     tol: f64,
     #[allow(dead_code)] // mirrors the Python n_jobs param; pool is set at construction
     n_jobs: Option<usize>,
+    monotone_constraints: Vec<i8>,
     // Fitted state
     n_classes: usize,
     initial_pred: Vec<f64>,
@@ -632,7 +633,8 @@ impl RFGBoostClassifier {
         n_estimators=20, learning_rate=0.1, rf_n_estimators=20,
         rf_max_depth=None, rf_max_features=None, bootstrap=true,
         random_state=None, min_samples_split=2, min_samples_leaf=1,
-        use_histogram=true, async_mode=false, tol=1e-4, n_jobs=None
+        use_histogram=true, async_mode=false, tol=1e-4, n_jobs=None,
+        monotone_constraints=None
     ))]
     fn new(
         n_estimators: usize,
@@ -648,6 +650,7 @@ impl RFGBoostClassifier {
         async_mode: bool,
         tol: f64,
         n_jobs: Option<usize>,
+        monotone_constraints: Option<Vec<i8>>,
     ) -> Self {
         set_thread_pool(n_jobs);
         Self {
@@ -664,6 +667,7 @@ impl RFGBoostClassifier {
             async_mode,
             tol,
             n_jobs,
+            monotone_constraints: monotone_constraints.unwrap_or_default(),
             n_classes: 0,
             initial_pred: vec![],
             models: Vec::new(),
@@ -706,6 +710,7 @@ impl RFGBoostClassifier {
             } else {
                 None
             },
+            monotone_constraints: self.monotone_constraints.clone(),
         };
 
         // Detect classes
@@ -1173,6 +1178,7 @@ impl RFGBoostRegressor {
             } else {
                 None
             },
+            monotone_constraints: Vec::new(),
         };
 
         self.initial_pred = if total_w_train > 0.0 {
@@ -1475,6 +1481,7 @@ impl RFGBoost {
                     async_mode,
                     tol,
                     n_jobs,
+                    None,
                 )),
                 reg: None,
                 task: task.to_string(),

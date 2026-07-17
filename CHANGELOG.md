@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-07-18
+
+### Added
+- **Monotonic constraints** for `RFGBoostClassifier` (binary). Pass
+  `monotone_constraints={column_index: +1|-1}` to force the prediction to be
+  non-decreasing (`+1`) or non-increasing (`-1`) in a feature. Keys index the
+  columns of the (numeric) matrix the estimator receives — WOE-encode
+  categoricals upstream with `WoeEncoder` and key on the encoded positions.
+  Enforced exactly during tree growth via value-bound propagation + split
+  rejection. Defaults to unconstrained, so existing models are unaffected.
+  Thanks to @orgoca (Carlos Ortiz) — closes #6.
+
 ## [0.2.2] - 2026-07-17
 
 No functional changes vs 0.2.0 — a housekeeping release (0.2.1 was tagged in

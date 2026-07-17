@@ -82,6 +82,29 @@ pub struct TreeConfig {
     pub min_samples_leaf: usize,
     pub is_classification: bool,
     pub max_features: Option<usize>,
+    /// Per-feature monotonic constraint: +1 (prediction non-decreasing in the
+    /// feature), -1 (non-increasing), 0 (unconstrained). Empty = all 0.
+    pub monotone_constraints: Vec<i8>,
+}
+
+/// Monotone constraint for a feature (0 if unconstrained or out of range).
+#[inline]
+fn constraint_of(config: &TreeConfig, feat: usize) -> i8 {
+    config.monotone_constraints.get(feat).copied().unwrap_or(0)
+}
+
+fn weighted_mean(y: &[f64], w: &[f64], indices: &[usize]) -> f64 {
+    let mut sw = 0.0;
+    let mut swy = 0.0;
+    for &i in indices {
+        sw += w[i];
+        swy += w[i] * y[i];
+    }
+    if sw > 0.0 {
+        swy / sw
+    } else {
+        0.0
+    }
 }
 
 pub fn resolve_max_features(spec: &Option<String>, n_features: usize) -> usize {
@@ -159,6 +182,8 @@ pub fn build_tree_on_bootstrap(
         config,
         rng,
         &boot_hist,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
     )
 }
 
@@ -185,9 +210,54 @@ pub fn build_tree_on_bootstrap_exact(
     }
 
     let indices: Vec<usize> = (0..n_boot).collect();
-    build_node_exact(&x_boot.view(), &y_boot, &w_boot, &indices, 0, config, rng)
+    build_node_exact(
+        &x_boot.view(),
+        &y_boot,
+        &w_boot,
+        &indices,
+        0,
+        config,
+        rng,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+    )
 }
 
+/// Given a split on `feat`, return (left_lower, left_upper, right_lower,
+/// right_upper) enforcing the monotone constraint by value-bound propagation:
+/// for an increasing feature every left-subtree leaf stays <= mid and every
+/// right-subtree leaf stays >= mid, where mid is between the two child means.
+fn child_bounds(
+    config: &TreeConfig,
+    feat: usize,
+    y: &[f64],
+    w: &[f64],
+    left_idx: &[usize],
+    right_idx: &[usize],
+    lower: f64,
+    upper: f64,
+) -> (f64, f64, f64, f64) {
+    let c = constraint_of(config, feat);
+    if c == 0 {
+        return (lower, upper, lower, upper);
+    }
+    let lv = weighted_mean(y, w, left_idx);
+    let rv = weighted_mean(y, w, right_idx);
+    let mut mid = 0.5 * (lv + rv);
+    if mid < lower {
+        mid = lower;
+    }
+    if mid > upper {
+        mid = upper;
+    }
+    if c > 0 {
+        (lower, mid, mid, upper) // increasing: left <= mid <= right
+    } else {
+        (mid, upper, lower, mid) // decreasing: left >= mid >= right
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn build_node(
     x: &ArrayView2<f64>,
     y: &[f64],
@@ -197,20 +267,22 @@ pub fn build_node(
     config: &TreeConfig,
     rng: &mut Pcg64,
     hist: &HistogramData,
+    lower: f64,
+    upper: f64,
 ) -> TreeNode {
     let n = indices.len();
 
     if n < config.min_samples_split || config.max_depth.is_some_and(|md| depth >= md) {
-        return create_leaf(y, w, indices, config);
+        return create_leaf(y, w, indices, config, lower, upper);
     }
     if config.is_classification && is_pure(y, indices) {
-        return create_leaf(y, w, indices, config);
+        return create_leaf(y, w, indices, config, lower, upper);
     }
 
     let (best_feat, best_thresh, best_gain) =
         find_best_split_hist(x, y, w, indices, config, rng, hist);
     if best_gain <= 0.0 {
-        return create_leaf(y, w, indices, config);
+        return create_leaf(y, w, indices, config, lower, upper);
     }
 
     let (mut left_idx, mut right_idx) = (Vec::new(), Vec::new());
@@ -223,8 +295,11 @@ pub fn build_node(
     }
 
     if left_idx.len() < config.min_samples_leaf || right_idx.len() < config.min_samples_leaf {
-        return create_leaf(y, w, indices, config);
+        return create_leaf(y, w, indices, config, lower, upper);
     }
+
+    let (ll, lu, rl, ru) =
+        child_bounds(config, best_feat, y, w, &left_idx, &right_idx, lower, upper);
 
     TreeNode {
         feature: best_feat,
@@ -238,6 +313,8 @@ pub fn build_node(
             config,
             rng,
             hist,
+            ll,
+            lu,
         ))),
         right: Some(Box::new(build_node(
             x,
@@ -248,6 +325,8 @@ pub fn build_node(
             config,
             rng,
             hist,
+            rl,
+            ru,
         ))),
         value: 0.0,
         samples: n,
@@ -255,6 +334,7 @@ pub fn build_node(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_node_exact(
     x: &ArrayView2<f64>,
     y: &[f64],
@@ -263,19 +343,21 @@ pub fn build_node_exact(
     depth: usize,
     config: &TreeConfig,
     rng: &mut Pcg64,
+    lower: f64,
+    upper: f64,
 ) -> TreeNode {
     let n = indices.len();
 
     if n < config.min_samples_split || config.max_depth.is_some_and(|md| depth >= md) {
-        return create_leaf(y, w, indices, config);
+        return create_leaf(y, w, indices, config, lower, upper);
     }
     if config.is_classification && is_pure(y, indices) {
-        return create_leaf(y, w, indices, config);
+        return create_leaf(y, w, indices, config, lower, upper);
     }
 
     let (best_feat, best_thresh, best_gain) = find_best_split_exact(x, y, w, indices, config, rng);
     if best_gain <= 0.0 {
-        return create_leaf(y, w, indices, config);
+        return create_leaf(y, w, indices, config, lower, upper);
     }
 
     let (mut left_idx, mut right_idx) = (Vec::new(), Vec::new());
@@ -288,8 +370,11 @@ pub fn build_node_exact(
     }
 
     if left_idx.len() < config.min_samples_leaf || right_idx.len() < config.min_samples_leaf {
-        return create_leaf(y, w, indices, config);
+        return create_leaf(y, w, indices, config, lower, upper);
     }
+
+    let (ll, lu, rl, ru) =
+        child_bounds(config, best_feat, y, w, &left_idx, &right_idx, lower, upper);
 
     TreeNode {
         feature: best_feat,
@@ -302,6 +387,8 @@ pub fn build_node_exact(
             depth + 1,
             config,
             rng,
+            ll,
+            lu,
         ))),
         right: Some(Box::new(build_node_exact(
             x,
@@ -311,6 +398,8 @@ pub fn build_node_exact(
             depth + 1,
             config,
             rng,
+            rl,
+            ru,
         ))),
         value: 0.0,
         samples: n,
@@ -326,7 +415,14 @@ fn is_pure(y: &[f64], indices: &[usize]) -> bool {
     indices.iter().all(|&i| (y[i] as usize) == first)
 }
 
-fn create_leaf(y: &[f64], w: &[f64], indices: &[usize], config: &TreeConfig) -> TreeNode {
+fn create_leaf(
+    y: &[f64],
+    w: &[f64],
+    indices: &[usize],
+    config: &TreeConfig,
+    lower: f64,
+    upper: f64,
+) -> TreeNode {
     let n = indices.len();
     if config.is_classification {
         let mut counts: HashMap<usize, f64> = HashMap::new();
@@ -348,19 +444,23 @@ fn create_leaf(y: &[f64], w: &[f64], indices: &[usize], config: &TreeConfig) -> 
             class_counts: Some(counts),
         }
     } else {
-        let mut sw = 0.0_f64;
-        let mut swy = 0.0_f64;
-        for &i in indices {
-            sw += w[i];
-            swy += w[i] * y[i];
+        // Weighted mean of the leaf (shares the zero-weight fallback with
+        // weighted_mean used during split/bound computation).
+        let mut value = weighted_mean(y, w, indices);
+        // Monotone value bounds: clamp into the interval propagated from
+        // constrained ancestor splits (lower=-inf/upper=+inf when unconstrained).
+        if value < lower {
+            value = lower;
         }
-        let mean = if sw > 0.0 { swy / sw } else { 0.0 };
+        if value > upper {
+            value = upper;
+        }
         TreeNode {
             feature: 0,
             threshold: 0.0,
             left: None,
             right: None,
-            value: mean,
+            value,
             samples: n,
             class_counts: None,
         }
@@ -511,6 +611,19 @@ fn find_best_split_hist(
 
                 let right_wy = total_wy - left_wy;
                 let right_wyy = total_wyy - left_wyy;
+
+                // Monotone constraint: reject candidate splits whose child means
+                // violate the required direction, so the chosen structure is
+                // consistent with the value-bound propagation in build_node.
+                let c = constraint_of(config, feat);
+                if c != 0 {
+                    let lmean = left_wy / left_w;
+                    let rmean = right_wy / right_w;
+                    if (c > 0 && lmean > rmean) || (c < 0 && lmean < rmean) {
+                        continue;
+                    }
+                }
+
                 let left_var = left_wyy / left_w - (left_wy / left_w).powi(2);
                 let right_var = right_wyy / right_w - (right_wy / right_w).powi(2);
                 let weighted = (left_w * left_var + right_w * right_var) / total_w;
@@ -654,6 +767,19 @@ fn find_best_split_exact(
 
                 let right_wy = total_wy - left_wy;
                 let right_wyy = total_wyy - left_wyy;
+
+                // Monotone constraint: reject candidate splits whose child means
+                // violate the required direction, so the chosen structure is
+                // consistent with the value-bound propagation in build_node.
+                let c = constraint_of(config, feat);
+                if c != 0 {
+                    let lmean = left_wy / left_w;
+                    let rmean = right_wy / right_w;
+                    if (c > 0 && lmean > rmean) || (c < 0 && lmean < rmean) {
+                        continue;
+                    }
+                }
+
                 let left_var = left_wyy / left_w - (left_wy / left_w).powi(2);
                 let right_var = right_wyy / right_w - (right_wy / right_w).powi(2);
                 let weighted = (left_w * left_var + right_w * right_var) / total_w;
