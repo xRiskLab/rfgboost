@@ -188,6 +188,18 @@ jobs:
           export CARGO_UNSTABLE_BUILD_STD="std,panic_abort"
           pyodide build
 
+      # pyodide-build 0.35.1 tags the wheel `pyemscripten_2025_0_wasm32`, but
+      # Pyodide/JupyterLite (0.28.x) and micropip only recognize the canonical
+      # `pyodide_2025_0_wasm32` ABI tag. The mistagged wheel makes
+      # `micropip.install("rfgboost")` fail with "Can't find a pure Python 3
+      # wheel" (and direct/emfs installs fail the emscripten-version check).
+      # Normalize the platform tag so the published wheel actually resolves.
+      - name: Normalize Pyodide platform tag
+        run: |
+          pip install wheel
+          python -m wheel tags --remove --platform-tag pyodide_2025_0_wasm32 dist/*.whl
+          ls -la dist/
+
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:

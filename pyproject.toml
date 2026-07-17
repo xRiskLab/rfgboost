@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rfgboost"
-version = "0.2.0"
+version = "0.2.1"
 description = "RFGBoost: async Random Forest + gradient boosting engine in Rust with CI-based convergence"
 readme = "README.md"
 license = {text = "MIT"}
@@ -131,6 +131,7 @@ dev = [
     "maturin>=1.0",
     "ruff>=0.11.13",
     "mypy>=1.11.0",
+    "pre-commit>=3.5.0",
 ]
 
 [tool.mypy]
