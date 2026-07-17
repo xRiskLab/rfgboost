@@ -187,6 +187,7 @@ impl RandomForestUnsupervised {
             } else {
                 None
             },
+            monotone_constraints: Vec::new(),
         };
 
         // Pre-compute bootstrap params and track OOB for original samples
