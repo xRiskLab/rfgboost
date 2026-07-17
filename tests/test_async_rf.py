@@ -1,6 +1,5 @@
 """async_mode: confidence-based early stopping for the standalone forests."""
 
-import numpy as np
 from sklearn.datasets import make_classification, make_regression
 from sklearn.metrics import accuracy_score, r2_score
 from sklearn.model_selection import train_test_split

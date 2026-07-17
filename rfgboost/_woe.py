@@ -117,7 +117,7 @@ class WoeEncoder(TransformerMixin, BaseEstimator):  # type: ignore[misc]
     def __init__(self, cat_features: Optional[Iterable[int]] = None) -> None:
         self.cat_features = cat_features
 
-    def fit(self, X: ArrayLike, y: ArrayLike) -> "WoeEncoder":
+    def fit(self, X: ArrayLike, y: ArrayLike) -> WoeEncoder:
         self.cat_features_ = list(self.cat_features) if self.cat_features else []
         if not self.cat_features_:
             self.woe_ = None
@@ -158,13 +158,15 @@ class WoeEncoder(TransformerMixin, BaseEstimator):  # type: ignore[misc]
         )
 
     def get_iv_analysis(self) -> Any:
-        if getattr(self, "woe_", None) is None:
+        woe = getattr(self, "woe_", None)
+        if woe is None:
             raise ValueError("WoeEncoder has no fitted WOE (no cat_features)")
-        return self.woe_.get_iv_analysis()
+        return woe.get_iv_analysis()
 
     def to_dict(self, n_features: int) -> dict[str, Any]:
         """JSON-friendly WOE lookup-table bundle. `n_features` is the original
-        (pre-encoding) column count, needed to recover the numeric-column order."""
+        (pre-encoding) column count, needed to recover the numeric-column order.
+        """
         if getattr(self, "woe_", None) is None:
             raise ValueError("WoeEncoder has no fitted WOE (no cat_features)")
         return _woe_bundle(

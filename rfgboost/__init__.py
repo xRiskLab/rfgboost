@@ -7,6 +7,7 @@ try:
 except PackageNotFoundError:  # not installed (e.g. running from source)
     __version__ = "0.0.0+unknown"
 
+from rfgboost._estimators import RFGBoostClassifier, RFGBoostRegressor
 from rfgboost._rs import (
     DecisionTree,
     RandomForestClassifier,
@@ -14,7 +15,6 @@ from rfgboost._rs import (
     RandomForestUnsupervised,
     TreeSHAP,
 )
-from rfgboost._estimators import RFGBoostClassifier, RFGBoostRegressor
 from rfgboost._woe import WoeEncoder
 
 __all__ = [
