@@ -1,3 +1,4 @@
+use crate::par::*;
 use numpy::{PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -6,7 +7,6 @@ use rand::prelude::*;
 use rand_pcg::Pcg32 as Pcg64;
 #[cfg(not(target_os = "emscripten"))]
 use rand_pcg::Pcg64;
-use crate::par::*;
 use std::collections::HashMap;
 
 use crate::histogram::HistogramData;
@@ -53,7 +53,8 @@ fn build_forest_streaming(
 
     let converged = AtomicBool::new(false);
     let n_collected = AtomicUsize::new(0);
-    let collector: Mutex<Vec<(usize, TreeNode)>> = Mutex::new(Vec::with_capacity(tree_params.len()));
+    let collector: Mutex<Vec<(usize, TreeNode)>> =
+        Mutex::new(Vec::with_capacity(tree_params.len()));
     let votes: Mutex<Vec<f64>> = Mutex::new(vec![0.0; n_samples * nc]);
     let wmean: Mutex<Vec<f64>> = Mutex::new(vec![0.0; n_samples]);
     let wm2: Mutex<Vec<f64>> = Mutex::new(vec![0.0; n_samples]);
@@ -69,10 +70,15 @@ fn build_forest_streaming(
             let wm2 = &wm2;
             let x_ref = &x_owned;
             s.spawn(move |_| {
-                if converged.load(Ordering::Relaxed) { return; }
+                if converged.load(Ordering::Relaxed) {
+                    return;
+                }
                 let mut tree_rng = Pcg64::seed_from_u64(seed);
-                let tree = build_tree_on_bootstrap(&x_ref.view(), y, w, boot, config, &mut tree_rng, hist);
-                if converged.load(Ordering::Relaxed) { return; }
+                let tree =
+                    build_tree_on_bootstrap(&x_ref.view(), y, w, boot, config, &mut tree_rng, hist);
+                if converged.load(Ordering::Relaxed) {
+                    return;
+                }
 
                 let preds: Vec<f64> = x_ref
                     .view()
@@ -97,11 +103,18 @@ fn build_forest_streaming(
                                 let (mut p1, mut p2) = (0.0f64, 0.0f64);
                                 for k in 0..nc {
                                     let pk = v[i * nc + k] / cf;
-                                    if pk > p1 { p2 = p1; p1 = pk; } else if pk > p2 { p2 = pk; }
+                                    if pk > p1 {
+                                        p2 = p1;
+                                        p1 = pk;
+                                    } else if pk > p2 {
+                                        p2 = pk;
+                                    }
                                 }
                                 let (lo1, _) = wilson(p1, cf, z);
                                 let (_, hi2) = wilson(p2, cf, z);
-                                if lo1 > hi2 { n_stable += 1; }
+                                if lo1 > hi2 {
+                                    n_stable += 1;
+                                }
                             }
                             stop = n_stable as f64 / n_samples as f64 >= conf_target;
                         }
@@ -125,18 +138,25 @@ fn build_forest_streaming(
                                 stop = max_change < tol;
                             } else {
                                 let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-                                for i in 0..n_samples { lo = lo.min(mean[i]); hi = hi.max(mean[i]); }
+                                for i in 0..n_samples {
+                                    lo = lo.min(mean[i]);
+                                    hi = hi.max(mean[i]);
+                                }
                                 let threshold = 0.05 * (hi - lo).max(1e-10);
                                 let mut n_stable = 0usize;
                                 for i in 0..n_samples {
                                     let var = if c > 1 { m2[i] / (cf - 1.0) } else { 0.0 };
-                                    if z * (var / cf).sqrt() < threshold { n_stable += 1; }
+                                    if z * (var / cf).sqrt() < threshold {
+                                        n_stable += 1;
+                                    }
                                 }
                                 stop = n_stable as f64 / n_samples as f64 >= conf_target;
                             }
                         }
                     }
-                    if stop { converged.store(true, Ordering::SeqCst); }
+                    if stop {
+                        converged.store(true, Ordering::SeqCst);
+                    }
                 }
                 collector.lock().unwrap().push((idx, tree));
             });
@@ -181,14 +201,29 @@ impl RandomForestRegressor {
         async_mode=false, tol=0.0
     ))]
     fn new(
-        n_estimators: usize, max_depth: Option<usize>, max_features: Option<String>,
-        bootstrap: bool, random_state: Option<u64>, min_samples_split: usize, min_samples_leaf: usize,
-        async_mode: bool, tol: f64,
+        n_estimators: usize,
+        max_depth: Option<usize>,
+        max_features: Option<String>,
+        bootstrap: bool,
+        random_state: Option<u64>,
+        min_samples_split: usize,
+        min_samples_leaf: usize,
+        async_mode: bool,
+        tol: f64,
     ) -> Self {
         Self {
-            n_estimators, max_depth, max_features, bootstrap, random_state,
-            min_samples_split, min_samples_leaf, async_mode, tol,
-            trees: Vec::new(), trees_used: 0, is_fitted: false,
+            n_estimators,
+            max_depth,
+            max_features,
+            bootstrap,
+            random_state,
+            min_samples_split,
+            min_samples_leaf,
+            async_mode,
+            tol,
+            trees: Vec::new(),
+            trees_used: 0,
+            is_fitted: false,
             #[cfg(feature = "cuda")]
             cuda_cache: std::cell::RefCell::new(None),
             #[cfg(feature = "gpu")]
@@ -205,8 +240,7 @@ impl RandomForestRegressor {
     ) -> PyResult<()> {
         let x_arr = x.as_array();
         let y_vec: Vec<f64> = y.as_array().to_vec();
-        crate::tree::validate_finite(&x_arr.view(), &y_vec)
-            .map_err(PyValueError::new_err)?;
+        crate::tree::validate_finite(&x_arr.view(), &y_vec).map_err(PyValueError::new_err)?;
         let n_samples = x_arr.nrows();
         let n_features = x_arr.ncols();
         let weights: Vec<f64> = match sample_weight {
@@ -221,14 +255,26 @@ impl RandomForestRegressor {
         let mut rng = crate::tree::seed_rng(self.random_state);
 
         let config = TreeConfig {
-            max_depth: self.max_depth, min_samples_split: self.min_samples_split,
-            min_samples_leaf: self.min_samples_leaf, is_classification: false,
-            max_features: if max_feat < n_features { Some(max_feat) } else { None },
+            max_depth: self.max_depth,
+            min_samples_split: self.min_samples_split,
+            min_samples_leaf: self.min_samples_leaf,
+            is_classification: false,
+            max_features: if max_feat < n_features {
+                Some(max_feat)
+            } else {
+                None
+            },
         };
 
         let tree_params: Vec<(Vec<usize>, u64)> = (0..self.n_estimators)
             .map(|_| {
-                let boot = if self.bootstrap { (0..n_samples).map(|_| rng.gen_range(0..n_samples)).collect() } else { (0..n_samples).collect() };
+                let boot = if self.bootstrap {
+                    (0..n_samples)
+                        .map(|_| rng.gen_range(0..n_samples))
+                        .collect()
+                } else {
+                    (0..n_samples).collect()
+                };
                 (boot, rng.gen())
             })
             .collect();
@@ -238,23 +284,46 @@ impl RandomForestRegressor {
 
         let min_trees = (self.n_estimators / 10).max(3);
         self.trees = if self.async_mode {
-            build_forest_streaming(&x_owned.view(), &y_vec, &weights, &tree_params, &config,
-                &global_hist, self.tol, min_trees, 0.90, false, 1)
+            build_forest_streaming(
+                &x_owned.view(),
+                &y_vec,
+                &weights,
+                &tree_params,
+                &config,
+                &global_hist,
+                self.tol,
+                min_trees,
+                0.90,
+                false,
+                1,
+            )
         } else {
             tree_params
                 .into_par_iter()
                 .map(|(boot, seed)| {
                     let mut tree_rng = Pcg64::seed_from_u64(seed);
-                    build_tree_on_bootstrap(&x_owned.view(), &y_vec, &weights, &boot, &config, &mut tree_rng, &global_hist)
+                    build_tree_on_bootstrap(
+                        &x_owned.view(),
+                        &y_vec,
+                        &weights,
+                        &boot,
+                        &config,
+                        &mut tree_rng,
+                        &global_hist,
+                    )
                 })
                 .collect()
         };
         self.trees_used = self.trees.len();
 
         #[cfg(feature = "cuda")]
-        { *self.cuda_cache.borrow_mut() = None; }
+        {
+            *self.cuda_cache.borrow_mut() = None;
+        }
         #[cfg(feature = "gpu")]
-        { *self.gpu_cache.borrow_mut() = None; }
+        {
+            *self.gpu_cache.borrow_mut() = None;
+        }
 
         self.is_fitted = true;
         Ok(())
@@ -267,13 +336,20 @@ impl RandomForestRegressor {
     /// with no available hardware, raises a clear error.
     #[pyo3(signature = (x, device="cpu"))]
     fn predict(&self, x: PyReadonlyArray2<f64>, device: &str) -> PyResult<Vec<f64>> {
-        if !self.is_fitted { return Err(PyValueError::new_err("RandomForestRegressor has not been fitted")); }
+        if !self.is_fitted {
+            return Err(PyValueError::new_err(
+                "RandomForestRegressor has not been fitted",
+            ));
+        }
         match device {
             "cpu" => {
                 let x_arr = x.as_array();
                 let n_trees = self.trees.len() as f64;
                 let trees = &self.trees;
-                Ok(x_arr.outer_iter().collect::<Vec<_>>().into_par_iter()
+                Ok(x_arr
+                    .outer_iter()
+                    .collect::<Vec<_>>()
+                    .into_par_iter()
                     .map(|row| {
                         let sample = row.as_slice().unwrap();
                         trees.iter().map(|tree| traverse(tree, sample)).sum::<f64>() / n_trees
@@ -286,7 +362,8 @@ impl RandomForestRegressor {
             "mps" | "metal" | "gpu" => self.predict_gpu_impl(x),
             other => Err(PyValueError::new_err(format!(
                 "device '{}' is not available in this build. Available: {}.",
-                other, Self::available_devices()
+                other,
+                Self::available_devices()
             ))),
         }
     }
@@ -298,19 +375,30 @@ impl RandomForestRegressor {
         Ok(info)
     }
 
-    #[getter] fn n_estimators(&self) -> usize { self.n_estimators }
-    #[getter] fn is_fitted(&self) -> bool { self.is_fitted }
+    #[getter]
+    fn n_estimators(&self) -> usize {
+        self.n_estimators
+    }
+    #[getter]
+    fn is_fitted(&self) -> bool {
+        self.is_fitted
+    }
     /// Trees actually built — < n_estimators when async_mode stopped early.
-    #[getter] fn trees_used(&self) -> usize { self.trees_used }
+    #[getter]
+    fn trees_used(&self) -> usize {
+        self.trees_used
+    }
 }
 
 // Device backends behind `predict(device=...)` — not exposed as Python methods.
 impl RandomForestRegressor {
     fn available_devices() -> String {
         #[allow(unused_mut)]
-        let mut d = vec!["cpu"];
-        #[cfg(feature = "cuda")] d.push("cuda");
-        #[cfg(feature = "gpu")] d.push("mps");
+        let mut d = ["cpu"];
+        #[cfg(feature = "cuda")]
+        d.push("cuda");
+        #[cfg(feature = "gpu")]
+        d.push("mps");
         d.join(", ")
     }
 
@@ -325,11 +413,19 @@ impl RandomForestRegressor {
         let mut cache = self.cuda_cache.borrow_mut();
         if cache.is_none() {
             *cache = Some(
-                crate::cuda::CudaForest::new(&self.trees, nf, 1, |node, out| out[0] = node.value as f32)
-                    .ok_or_else(|| PyValueError::new_err("CUDA device unavailable"))?,
+                crate::cuda::CudaForest::new(&self.trees, nf, 1, |node, out| {
+                    out[0] = node.value as f32
+                })
+                .ok_or_else(|| PyValueError::new_err("CUDA device unavailable"))?,
             );
         }
-        Ok(cache.as_ref().unwrap().predict(&xf, n).into_iter().map(|v| v as f64).collect())
+        Ok(cache
+            .as_ref()
+            .unwrap()
+            .predict(&xf, n)
+            .into_iter()
+            .map(|v| v as f64)
+            .collect())
     }
 
     #[cfg(feature = "gpu")]
@@ -343,11 +439,19 @@ impl RandomForestRegressor {
         let mut cache = self.gpu_cache.borrow_mut();
         if cache.is_none() {
             *cache = Some(
-                crate::gpu::GpuForest::new(&self.trees, nf, 1, |node, out| out[0] = node.value as f32)
-                    .ok_or_else(|| PyValueError::new_err("GPU (wgpu) device unavailable"))?,
+                crate::gpu::GpuForest::new(&self.trees, nf, 1, |node, out| {
+                    out[0] = node.value as f32
+                })
+                .ok_or_else(|| PyValueError::new_err("GPU (wgpu) device unavailable"))?,
             );
         }
-        Ok(cache.as_ref().unwrap().predict(&xf, n).into_iter().map(|v| v as f64).collect())
+        Ok(cache
+            .as_ref()
+            .unwrap()
+            .predict(&xf, n)
+            .into_iter()
+            .map(|v| v as f64)
+            .collect())
     }
 }
 
@@ -383,15 +487,31 @@ impl RandomForestClassifier {
         async_mode=false, tol=0.0
     ))]
     fn new(
-        n_estimators: usize, max_depth: Option<usize>, max_features: Option<String>,
-        bootstrap: bool, random_state: Option<u64>, min_samples_split: usize, min_samples_leaf: usize,
-        async_mode: bool, tol: f64,
+        n_estimators: usize,
+        max_depth: Option<usize>,
+        max_features: Option<String>,
+        bootstrap: bool,
+        random_state: Option<u64>,
+        min_samples_split: usize,
+        min_samples_leaf: usize,
+        async_mode: bool,
+        tol: f64,
     ) -> Self {
         Self {
-            n_estimators, max_depth, max_features, bootstrap, random_state,
-            min_samples_split, min_samples_leaf, async_mode, tol,
-            trees: Vec::new(), trees_used: 0, n_classes: 0,
-            classes_: None, is_fitted: false,
+            n_estimators,
+            max_depth,
+            max_features,
+            bootstrap,
+            random_state,
+            min_samples_split,
+            min_samples_leaf,
+            async_mode,
+            tol,
+            trees: Vec::new(),
+            trees_used: 0,
+            n_classes: 0,
+            classes_: None,
+            is_fitted: false,
             #[cfg(feature = "cuda")]
             cuda_cache: std::cell::RefCell::new(None),
             #[cfg(feature = "gpu")]
@@ -408,8 +528,7 @@ impl RandomForestClassifier {
     ) -> PyResult<()> {
         let x_arr = x.as_array();
         let y_vec: Vec<f64> = y.as_array().to_vec();
-        crate::tree::validate_finite(&x_arr.view(), &y_vec)
-            .map_err(PyValueError::new_err)?;
+        crate::tree::validate_finite(&x_arr.view(), &y_vec).map_err(PyValueError::new_err)?;
         let n_samples = x_arr.nrows();
         let n_features = x_arr.ncols();
         let weights: Vec<f64> = match sample_weight {
@@ -431,14 +550,26 @@ impl RandomForestClassifier {
         let mut rng = crate::tree::seed_rng(self.random_state);
 
         let config = TreeConfig {
-            max_depth: self.max_depth, min_samples_split: self.min_samples_split,
-            min_samples_leaf: self.min_samples_leaf, is_classification: true,
-            max_features: if max_feat < n_features { Some(max_feat) } else { None },
+            max_depth: self.max_depth,
+            min_samples_split: self.min_samples_split,
+            min_samples_leaf: self.min_samples_leaf,
+            is_classification: true,
+            max_features: if max_feat < n_features {
+                Some(max_feat)
+            } else {
+                None
+            },
         };
 
         let tree_params: Vec<(Vec<usize>, u64)> = (0..self.n_estimators)
             .map(|_| {
-                let boot = if self.bootstrap { (0..n_samples).map(|_| rng.gen_range(0..n_samples)).collect() } else { (0..n_samples).collect() };
+                let boot = if self.bootstrap {
+                    (0..n_samples)
+                        .map(|_| rng.gen_range(0..n_samples))
+                        .collect()
+                } else {
+                    (0..n_samples).collect()
+                };
                 (boot, rng.gen())
             })
             .collect();
@@ -448,23 +579,46 @@ impl RandomForestClassifier {
 
         let min_trees = (self.n_estimators / 10).max(3);
         self.trees = if self.async_mode {
-            build_forest_streaming(&x_owned.view(), &y_vec, &weights, &tree_params, &config,
-                &global_hist, self.tol, min_trees, 0.90, true, self.n_classes)
+            build_forest_streaming(
+                &x_owned.view(),
+                &y_vec,
+                &weights,
+                &tree_params,
+                &config,
+                &global_hist,
+                self.tol,
+                min_trees,
+                0.90,
+                true,
+                self.n_classes,
+            )
         } else {
             tree_params
                 .into_par_iter()
                 .map(|(boot, seed)| {
                     let mut tree_rng = Pcg64::seed_from_u64(seed);
-                    build_tree_on_bootstrap(&x_owned.view(), &y_vec, &weights, &boot, &config, &mut tree_rng, &global_hist)
+                    build_tree_on_bootstrap(
+                        &x_owned.view(),
+                        &y_vec,
+                        &weights,
+                        &boot,
+                        &config,
+                        &mut tree_rng,
+                        &global_hist,
+                    )
                 })
                 .collect()
         };
         self.trees_used = self.trees.len();
 
         #[cfg(feature = "cuda")]
-        { *self.cuda_cache.borrow_mut() = None; }
+        {
+            *self.cuda_cache.borrow_mut() = None;
+        }
         #[cfg(feature = "gpu")]
-        { *self.gpu_cache.borrow_mut() = None; }
+        {
+            *self.gpu_cache.borrow_mut() = None;
+        }
 
         self.is_fitted = true;
         Ok(())
@@ -474,11 +628,15 @@ impl RandomForestClassifier {
     #[pyo3(signature = (x, device="cpu"))]
     fn predict(&self, x: PyReadonlyArray2<f64>, device: &str) -> PyResult<Vec<f64>> {
         let proba = self.predict_proba_impl(x, device)?;
-        Ok(proba.iter().map(|p| {
-            p.iter().enumerate()
-                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                .map_or(0.0, |(i, _)| i as f64)
-        }).collect())
+        Ok(proba
+            .iter()
+            .map(|p| {
+                p.iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                    .map_or(0.0, |(i, _)| i as f64)
+            })
+            .collect())
     }
 
     /// Class probabilities (n_rows x n_classes). `device`: "cpu" (default),
@@ -491,7 +649,11 @@ impl RandomForestClassifier {
     fn score(&self, x: PyReadonlyArray2<f64>, y: PyReadonlyArray1<f64>) -> PyResult<f64> {
         let preds = self.predict(x, "cpu")?;
         let y_vec = y.as_array().to_vec();
-        let correct = preds.iter().zip(y_vec.iter()).filter(|(&p, &t)| (p as usize) == (t as usize)).count();
+        let correct = preds
+            .iter()
+            .zip(y_vec.iter())
+            .filter(|(&p, &t)| (p as usize) == (t as usize))
+            .count();
         Ok(correct as f64 / y_vec.len() as f64)
     }
 
@@ -503,12 +665,27 @@ impl RandomForestClassifier {
         Ok(info)
     }
 
-    #[getter] fn n_estimators(&self) -> usize { self.n_estimators }
-    #[getter] fn n_classes(&self) -> usize { self.n_classes }
-    #[getter] fn classes_(&self) -> Option<Vec<usize>> { self.classes_.clone() }
-    #[getter] fn is_fitted(&self) -> bool { self.is_fitted }
+    #[getter]
+    fn n_estimators(&self) -> usize {
+        self.n_estimators
+    }
+    #[getter]
+    fn n_classes(&self) -> usize {
+        self.n_classes
+    }
+    #[getter]
+    fn classes_(&self) -> Option<Vec<usize>> {
+        self.classes_.clone()
+    }
+    #[getter]
+    fn is_fitted(&self) -> bool {
+        self.is_fitted
+    }
     /// Trees actually built — < n_estimators when async_mode stopped early.
-    #[getter] fn trees_used(&self) -> usize { self.trees_used }
+    #[getter]
+    fn trees_used(&self) -> usize {
+        self.trees_used
+    }
 }
 
 // Leaf -> class-probability vector (matches traverse_proba): out[cls] = count/total.
@@ -518,7 +695,9 @@ fn leaf_proba(node: &TreeNode, n_classes: usize, out: &mut [f32]) {
         let total: f64 = counts.values().sum();
         if total > 0.0 {
             for (&cls, &cnt) in counts {
-                if cls < n_classes { out[cls] = (cnt / total) as f32; }
+                if cls < n_classes {
+                    out[cls] = (cnt / total) as f32;
+                }
             }
         }
     }
@@ -528,27 +707,42 @@ fn leaf_proba(node: &TreeNode, n_classes: usize, out: &mut [f32]) {
 impl RandomForestClassifier {
     fn available_devices() -> String {
         #[allow(unused_mut)]
-        let mut d = vec!["cpu"];
-        #[cfg(feature = "cuda")] d.push("cuda");
-        #[cfg(feature = "gpu")] d.push("mps");
+        let mut d = ["cpu"];
+        #[cfg(feature = "cuda")]
+        d.push("cuda");
+        #[cfg(feature = "gpu")]
+        d.push("mps");
         d.join(", ")
     }
 
-    fn predict_proba_impl(&self, x: PyReadonlyArray2<f64>, device: &str) -> PyResult<Vec<Vec<f64>>> {
-        if !self.is_fitted { return Err(PyValueError::new_err("RandomForestClassifier has not been fitted")); }
+    fn predict_proba_impl(
+        &self,
+        x: PyReadonlyArray2<f64>,
+        device: &str,
+    ) -> PyResult<Vec<Vec<f64>>> {
+        if !self.is_fitted {
+            return Err(PyValueError::new_err(
+                "RandomForestClassifier has not been fitted",
+            ));
+        }
         match device {
             "cpu" => {
                 let x_arr = x.as_array();
                 let n_classes = self.n_classes;
                 let n_trees = self.trees.len() as f64;
                 let trees = &self.trees;
-                Ok(x_arr.outer_iter().collect::<Vec<_>>().into_par_iter()
+                Ok(x_arr
+                    .outer_iter()
+                    .collect::<Vec<_>>()
+                    .into_par_iter()
                     .map(|row| {
                         let sample = row.as_slice().unwrap();
                         let mut agg = vec![0.0; n_classes];
                         for tree in trees {
                             let probs = traverse_proba(tree, sample, n_classes);
-                            for (i, p) in probs.iter().enumerate() { agg[i] += p; }
+                            for (i, p) in probs.iter().enumerate() {
+                                agg[i] += p;
+                            }
                         }
                         agg.iter().map(|&v| v / n_trees).collect()
                     })
@@ -560,7 +754,8 @@ impl RandomForestClassifier {
             "mps" | "metal" | "gpu" => self.proba_gpu_impl(x),
             other => Err(PyValueError::new_err(format!(
                 "device '{}' is not available in this build. Available: {}.",
-                other, Self::available_devices()
+                other,
+                Self::available_devices()
             ))),
         }
     }
@@ -577,13 +772,24 @@ impl RandomForestClassifier {
         let mut cache = self.cuda_cache.borrow_mut();
         if cache.is_none() {
             *cache = Some(
-                crate::cuda::CudaForest::new(&self.trees, nf, nc, move |node, out| leaf_proba(node, nc, out))
-                    .ok_or_else(|| PyValueError::new_err(format!(
-                        "CUDA unavailable or n_classes>{} unsupported", crate::cuda::MAX_OUT)))?,
+                crate::cuda::CudaForest::new(&self.trees, nf, nc, move |node, out| {
+                    leaf_proba(node, nc, out)
+                })
+                .ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "CUDA unavailable or n_classes>{} unsupported",
+                        crate::cuda::MAX_OUT
+                    ))
+                })?,
             );
         }
-        Ok(cache.as_ref().unwrap().predict(&xf, n).chunks(nc)
-            .map(|c| c.iter().map(|&v| v as f64).collect()).collect())
+        Ok(cache
+            .as_ref()
+            .unwrap()
+            .predict(&xf, n)
+            .chunks(nc)
+            .map(|c| c.iter().map(|&v| v as f64).collect())
+            .collect())
     }
 
     #[cfg(feature = "gpu")]
@@ -598,12 +804,23 @@ impl RandomForestClassifier {
         let mut cache = self.gpu_cache.borrow_mut();
         if cache.is_none() {
             *cache = Some(
-                crate::gpu::GpuForest::new(&self.trees, nf, nc, move |node, out| leaf_proba(node, nc, out))
-                    .ok_or_else(|| PyValueError::new_err(format!(
-                        "GPU unavailable or n_classes>{} unsupported", crate::gpu::MAX_OUT)))?,
+                crate::gpu::GpuForest::new(&self.trees, nf, nc, move |node, out| {
+                    leaf_proba(node, nc, out)
+                })
+                .ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "GPU unavailable or n_classes>{} unsupported",
+                        crate::gpu::MAX_OUT
+                    ))
+                })?,
             );
         }
-        Ok(cache.as_ref().unwrap().predict(&xf, n).chunks(nc)
-            .map(|c| c.iter().map(|&v| v as f64).collect()).collect())
+        Ok(cache
+            .as_ref()
+            .unwrap()
+            .predict(&xf, n)
+            .chunks(nc)
+            .map(|c| c.iter().map(|&v| v as f64).collect())
+            .collect())
     }
 }

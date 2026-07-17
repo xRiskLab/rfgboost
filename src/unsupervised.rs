@@ -1,3 +1,4 @@
+use crate::par::*;
 use ndarray::Array2;
 use numpy::PyReadonlyArray2;
 use pyo3::exceptions::PyValueError;
@@ -7,13 +8,10 @@ use rand::prelude::*;
 use rand_pcg::Pcg32 as Pcg64;
 #[cfg(not(target_os = "emscripten"))]
 use rand_pcg::Pcg64;
-use crate::par::*;
 use std::collections::{HashMap, HashSet};
 
 use crate::histogram::HistogramData;
-use crate::tree::{
-    build_tree_on_bootstrap, resolve_max_features, traverse, TreeConfig, TreeNode,
-};
+use crate::tree::{build_tree_on_bootstrap, resolve_max_features, traverse, TreeConfig, TreeNode};
 
 /// Find which terminal node a sample lands in.
 fn terminal_node_id(node: &TreeNode, sample: &[f64], id: usize) -> usize {
@@ -35,7 +33,9 @@ struct SparseProximityRow {
 
 impl SparseProximityRow {
     fn new() -> Self {
-        Self { neighbors: Vec::new() }
+        Self {
+            neighbors: Vec::new(),
+        }
     }
 
     fn insert(&mut self, idx: usize, prox: f64, max_neighbors: usize) {
@@ -45,10 +45,11 @@ impl SparseProximityRow {
         } else {
             self.neighbors.push((idx, prox));
         }
-        
+
         // Keep only top k neighbors if exceeded
         if self.neighbors.len() > max_neighbors * 2 {
-            self.neighbors.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            self.neighbors
+                .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
             self.neighbors.truncate(max_neighbors);
         }
     }
@@ -58,13 +59,15 @@ impl SparseProximityRow {
         for (_, p) in &mut self.neighbors {
             *p /= n_trees;
         }
-        self.neighbors.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        self.neighbors
+            .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
         self.neighbors.truncate(max_neighbors);
     }
 
     #[allow(dead_code)]
     fn get(&self, idx: usize) -> f64 {
-        self.neighbors.iter()
+        self.neighbors
+            .iter()
             .find(|(i, _)| *i == idx)
             .map(|(_, p)| *p)
             .unwrap_or(0.0)
@@ -83,6 +86,7 @@ pub struct RandomForestUnsupervised {
     random_state: Option<u64>,
     min_samples_split: usize,
     min_samples_leaf: usize,
+    #[allow(dead_code)] // mirrors the Python n_jobs param; pool is set at construction
     n_jobs: Option<usize>,
     n_neighbors: usize, // For sparse proximity storage
     // Fitted state
@@ -100,13 +104,18 @@ impl RandomForestUnsupervised {
     #[new]
     #[pyo3(signature = (
         n_estimators=500, max_depth=None, max_features=None,
-        random_state=None, min_samples_split=2, min_samples_leaf=1, 
+        random_state=None, min_samples_split=2, min_samples_leaf=1,
         n_jobs=None, n_neighbors=None
     ))]
     fn new(
-        n_estimators: usize, max_depth: Option<usize>, max_features: Option<String>,
-        random_state: Option<u64>, min_samples_split: usize, min_samples_leaf: usize,
-        n_jobs: Option<usize>, n_neighbors: Option<usize>,
+        n_estimators: usize,
+        max_depth: Option<usize>,
+        max_features: Option<String>,
+        random_state: Option<u64>,
+        min_samples_split: usize,
+        min_samples_leaf: usize,
+        n_jobs: Option<usize>,
+        n_neighbors: Option<usize>,
     ) -> Self {
         if let Some(nj) = n_jobs {
             if nj > 0 {
@@ -114,12 +123,17 @@ impl RandomForestUnsupervised {
             }
         }
         Self {
-            n_estimators, max_depth, max_features, random_state,
-            min_samples_split, min_samples_leaf, n_jobs,
+            n_estimators,
+            max_depth,
+            max_features,
+            random_state,
+            min_samples_split,
+            min_samples_leaf,
+            n_jobs,
             n_neighbors: n_neighbors.unwrap_or(0), // 0 means full matrix
-            trees: Vec::new(), 
+            trees: Vec::new(),
             oob_indices: Vec::new(),
-            x_train: None, 
+            x_train: None,
             n_original: 0,
             is_fitted: false,
             sparse_prox: None,
@@ -168,25 +182,27 @@ impl RandomForestUnsupervised {
             min_samples_split: self.min_samples_split,
             min_samples_leaf: self.min_samples_leaf,
             is_classification: true,
-            max_features: if max_feat < n_features { Some(max_feat) } else { None },
+            max_features: if max_feat < n_features {
+                Some(max_feat)
+            } else {
+                None
+            },
         };
 
         // Pre-compute bootstrap params and track OOB for original samples
-        let mut tree_params: Vec<(Vec<usize>, u64, HashSet<usize>)> = Vec::with_capacity(self.n_estimators);
+        let mut tree_params: Vec<(Vec<usize>, u64, HashSet<usize>)> =
+            Vec::with_capacity(self.n_estimators);
         for _ in 0..self.n_estimators {
-            let boot: Vec<usize> = (0..n_total)
-                .map(|_| rng.gen_range(0..n_total))
-                .collect();
-            
+            let boot: Vec<usize> = (0..n_total).map(|_| rng.gen_range(0..n_total)).collect();
+
             // Track which original samples (0..n_samples) are OOB
-            let in_bag: HashSet<usize> = boot.iter()
+            let in_bag: HashSet<usize> = boot
+                .iter()
                 .filter(|&&idx| idx < n_samples)
                 .cloned()
                 .collect();
-            let oob: HashSet<usize> = (0..n_samples)
-                .filter(|i| !in_bag.contains(i))
-                .collect();
-            
+            let oob: HashSet<usize> = (0..n_samples).filter(|i| !in_bag.contains(i)).collect();
+
             tree_params.push((boot, rng.gen(), oob));
         }
 
@@ -199,7 +215,13 @@ impl RandomForestUnsupervised {
             .map(|(boot, seed, oob)| {
                 let mut tree_rng = Pcg64::seed_from_u64(seed);
                 let tree = build_tree_on_bootstrap(
-                    &x_combined.view(), &y_combined, &weights, &boot, &config, &mut tree_rng, &global_hist,
+                    &x_combined.view(),
+                    &y_combined,
+                    &weights,
+                    &boot,
+                    &config,
+                    &mut tree_rng,
+                    &global_hist,
                 );
                 (tree, oob)
             })
@@ -226,7 +248,8 @@ impl RandomForestUnsupervised {
         let n = x.nrows();
 
         // For each tree, find the terminal node for each original sample
-        let leaf_assignments: Vec<Vec<usize>> = self.trees
+        let leaf_assignments: Vec<Vec<usize>> = self
+            .trees
             .par_iter()
             .map(|tree| {
                 (0..n)
@@ -244,7 +267,7 @@ impl RandomForestUnsupervised {
 
         for (t, leaves) in leaf_assignments.iter().enumerate() {
             let oob = &self.oob_indices[t];
-            
+
             for i in 0..n {
                 for j in i..n {
                     // Breiman's method: count only when at least one is OOB
@@ -253,7 +276,7 @@ impl RandomForestUnsupervised {
                     } else {
                         true
                     };
-                    
+
                     if valid && leaves[i] == leaves[j] {
                         prox[i][j] += 1.0;
                         if i != j {
@@ -290,16 +313,15 @@ impl RandomForestUnsupervised {
         if !self.is_fitted {
             return Err(PyValueError::new_err("Model has not been fitted"));
         }
-        
+
         let x = self.x_train.as_ref().unwrap();
         let n = x.nrows();
         let max_neighbors = k.unwrap_or(self.n_neighbors).max(1).min(n - 1);
         let n_trees = self.trees.len() as f64;
 
         // Build sparse proximity incrementally
-        let mut sparse: Vec<SparseProximityRow> = (0..n)
-            .map(|_| SparseProximityRow::new())
-            .collect();
+        let mut sparse: Vec<SparseProximityRow> =
+            (0..n).map(|_| SparseProximityRow::new()).collect();
 
         for (t, tree) in self.trees.iter().enumerate() {
             // Group samples by terminal node
@@ -334,9 +356,7 @@ impl RandomForestUnsupervised {
 
         self.sparse_prox = Some(sparse.clone());
 
-        Ok(sparse.into_iter()
-            .map(|r| r.neighbors)
-            .collect())
+        Ok(sparse.into_iter().map(|r| r.neighbors).collect())
     }
 
     /// Compute outlier scores following Breiman's method.
@@ -348,13 +368,12 @@ impl RandomForestUnsupervised {
         if !self.is_fitted {
             return Err(PyValueError::new_err("Model has not been fitted"));
         }
-        
+
         let n = self.n_original;
         let mut raw = vec![0.0; n];
 
-        if use_sparse && self.sparse_prox.is_some() {
+        if let Some(sparse) = self.sparse_prox.as_ref().filter(|_| use_sparse) {
             // Use cached sparse proximity
-            let sparse = self.sparse_prox.as_ref().unwrap();
             for i in 0..n {
                 let sum_sq = sparse[i].sum_squared();
                 raw[i] = if sum_sq > 0.0 { n as f64 / sum_sq } else { 0.0 };
@@ -372,14 +391,18 @@ impl RandomForestUnsupervised {
         let mut sorted = raw.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let median = sorted[n / 2];
-        let mut abs_devs: Vec<f64> = raw.iter()
+        let mut abs_devs: Vec<f64> = raw
+            .iter()
             .map(|&r| (r - median).abs().min(5.0 * median))
             .collect();
         abs_devs.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let mad = abs_devs.iter().sum::<f64>() / n as f64;
         let mad = if mad > 0.0 { mad } else { 1.0 };
 
-        Ok(raw.iter().map(|&r| ((r - median) / mad).min(20.0)).collect())
+        Ok(raw
+            .iter()
+            .map(|&r| ((r - median) / mad).min(20.0))
+            .collect())
     }
 
     /// Compute variable importance via permutation.
@@ -389,14 +412,16 @@ impl RandomForestUnsupervised {
         if !self.is_fitted {
             return Err(PyValueError::new_err("Model has not been fitted"));
         }
-        
+
         let x = self.x_train.as_ref().unwrap();
         let n = x.nrows();
         let n_features = x.ncols();
         let n_trees = self.trees.len();
-        
+
         // Base accuracy: fraction of original samples correctly classified as class 1
-        let base_correct: f64 = self.trees.par_iter()
+        let base_correct: f64 = self
+            .trees
+            .par_iter()
             .zip(self.oob_indices.par_iter())
             .map(|(tree, oob)| {
                 let mut correct = 0.0;
@@ -404,14 +429,20 @@ impl RandomForestUnsupervised {
                 for &i in oob {
                     let row = x.row(i);
                     let pred = traverse(tree, row.as_slice().unwrap());
-                    if pred > 0.5 { // Class 1 = original
+                    if pred > 0.5 {
+                        // Class 1 = original
                         correct += 1.0;
                     }
                     count += 1.0;
                 }
-                if count > 0.0 { correct / count } else { 0.0 }
+                if count > 0.0 {
+                    correct / count
+                } else {
+                    0.0
+                }
             })
-            .sum::<f64>() / n_trees as f64;
+            .sum::<f64>()
+            / n_trees as f64;
 
         // Permutation importance per feature
         let mut rng = crate::tree::seed_rng(self.random_state);
@@ -422,7 +453,9 @@ impl RandomForestUnsupervised {
             let mut perm_indices: Vec<usize> = (0..n).collect();
             perm_indices.shuffle(&mut rng);
 
-            let perm_correct: f64 = self.trees.iter()
+            let perm_correct: f64 = self
+                .trees
+                .iter()
                 .zip(self.oob_indices.iter())
                 .map(|(tree, oob)| {
                     let mut correct = 0.0;
@@ -431,16 +464,21 @@ impl RandomForestUnsupervised {
                         // Create permuted sample
                         let mut sample: Vec<f64> = x.row(i).to_vec();
                         sample[feat] = x[[perm_indices[i], feat]];
-                        
+
                         let pred = traverse(tree, &sample);
                         if pred > 0.5 {
                             correct += 1.0;
                         }
                         count += 1.0;
                     }
-                    if count > 0.0 { correct / count } else { 0.0 }
+                    if count > 0.0 {
+                        correct / count
+                    } else {
+                        0.0
+                    }
                 })
-                .sum::<f64>() / n_trees as f64;
+                .sum::<f64>()
+                / n_trees as f64;
 
             // Importance = decrease in accuracy when feature is permuted
             importances[feat] = base_correct - perm_correct;
@@ -461,6 +499,9 @@ impl RandomForestUnsupervised {
     /// Follows Breiman's myscale subroutine: power iteration on double-centered
     /// proximity matrix to find eigenvalues/eigenvectors.
     #[pyo3(signature = (n_components=2))]
+    // `eigenvalue`'s initial 0.0 is load-bearing for the early-`break`
+    // (near-zero norm) path but flagged as unused on the normal path.
+    #[allow(unused_assignments)]
     fn transform(&self, n_components: usize) -> PyResult<Vec<Vec<f64>>> {
         if !self.is_fitted {
             return Err(PyValueError::new_err("Model has not been fitted"));
@@ -483,7 +524,9 @@ impl RandomForestUnsupervised {
 
         for comp in 0..n_components {
             // Initialize with alternating signs
-            let mut y: Vec<f64> = (0..n).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+            let mut y: Vec<f64> = (0..n)
+                .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+                .collect();
 
             let mut eigenvalue: f64 = 0.0;
 
@@ -512,7 +555,11 @@ impl RandomForestUnsupervised {
 
                 // Deflate: remove components of previous eigenvectors
                 for prev in 0..comp {
-                    let dot: f64 = u.iter().zip(eigenvectors[prev].iter()).map(|(a, b)| a * b).sum();
+                    let dot: f64 = u
+                        .iter()
+                        .zip(eigenvectors[prev].iter())
+                        .map(|(a, b)| a * b)
+                        .sum();
                     for i in 0..n {
                         y[i] -= dot * eigenvalues[prev] * eigenvectors[prev][i];
                     }
@@ -522,7 +569,9 @@ impl RandomForestUnsupervised {
                 eigenvalue = y.iter().zip(u.iter()).map(|(a, b)| a * b).sum();
 
                 // Check convergence
-                let residual: f64 = y.iter().zip(u.iter())
+                let residual: f64 = y
+                    .iter()
+                    .zip(u.iter())
                     .map(|(&yi, &ui)| (yi - eigenvalue * ui).powi(2))
                     .sum();
                 if residual < eigenvalue.abs() * 1e-7 {
@@ -553,7 +602,11 @@ impl RandomForestUnsupervised {
 
     /// Convenience method: fit the model and return the embedding.
     #[pyo3(signature = (x, n_components=2))]
-    fn fit_transform(&mut self, x: PyReadonlyArray2<f64>, n_components: usize) -> PyResult<Vec<Vec<f64>>> {
+    fn fit_transform(
+        &mut self,
+        x: PyReadonlyArray2<f64>,
+        n_components: usize,
+    ) -> PyResult<Vec<Vec<f64>>> {
         self.fit(x)?;
         self.transform(n_components)
     }
@@ -564,7 +617,7 @@ impl RandomForestUnsupervised {
         if !self.is_fitted {
             return Err(PyValueError::new_err("Model has not been fitted"));
         }
-        
+
         let x_train = self.x_train.as_ref().unwrap();
         let x_new_arr = x_new.as_array();
         let n_train = x_train.nrows();
@@ -572,7 +625,9 @@ impl RandomForestUnsupervised {
         let n_trees = self.trees.len() as f64;
 
         // Get terminal nodes for training data
-        let train_nodes: Vec<Vec<usize>> = self.trees.par_iter()
+        let train_nodes: Vec<Vec<usize>> = self
+            .trees
+            .par_iter()
             .map(|tree| {
                 (0..n_train)
                     .map(|i| {
@@ -585,12 +640,12 @@ impl RandomForestUnsupervised {
 
         // Get terminal nodes for new data and compute proximity
         let mut prox = vec![vec![0.0; n_train]; n_new];
-        
+
         for (t, tree) in self.trees.iter().enumerate() {
             for i in 0..n_new {
                 let row = x_new_arr.row(i);
                 let new_node = terminal_node_id(tree, row.as_slice().unwrap(), 0);
-                
+
                 for j in 0..n_train {
                     if train_nodes[t][j] == new_node {
                         prox[i][j] += 1.0;
@@ -614,15 +669,20 @@ impl RandomForestUnsupervised {
         if !self.is_fitted {
             return Err(PyValueError::new_err("Model has not been fitted"));
         }
-        
+
         let prox = self.predict_proximity(x_new)?;
         let n_train = self.n_original;
-        
+
         // Raw outlier scores: n / sum(prox^2)
-        let raw: Vec<f64> = prox.iter()
+        let raw: Vec<f64> = prox
+            .iter()
             .map(|row| {
                 let sum_sq: f64 = row.iter().map(|&p| p * p).sum();
-                if sum_sq > 0.0 { n_train as f64 / sum_sq } else { f64::MAX }
+                if sum_sq > 0.0 {
+                    n_train as f64 / sum_sq
+                } else {
+                    f64::MAX
+                }
             })
             .collect();
 
@@ -631,20 +691,34 @@ impl RandomForestUnsupervised {
         let mut sorted = train_outliers.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let median = sorted[sorted.len() / 2];
-        let mut abs_devs: Vec<f64> = train_outliers.iter()
+        let mut abs_devs: Vec<f64> = train_outliers
+            .iter()
             .map(|&r| (r - median).abs().min(5.0 * median))
             .collect();
         abs_devs.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let mad = abs_devs.iter().sum::<f64>() / train_outliers.len() as f64;
         let mad = if mad > 0.0 { mad } else { 1.0 };
 
-        Ok(raw.iter().map(|&r| ((r - median) / mad).min(20.0)).collect())
+        Ok(raw
+            .iter()
+            .map(|&r| ((r - median) / mad).min(20.0))
+            .collect())
     }
 
-    #[getter] fn n_estimators_(&self) -> usize { self.n_estimators }
-    #[getter] fn is_fitted_(&self) -> bool { self.is_fitted }
-    #[getter] fn n_samples_(&self) -> usize { self.n_original }
-    #[getter] fn n_features_(&self) -> PyResult<usize> {
+    #[getter]
+    fn n_estimators_(&self) -> usize {
+        self.n_estimators
+    }
+    #[getter]
+    fn is_fitted_(&self) -> bool {
+        self.is_fitted
+    }
+    #[getter]
+    fn n_samples_(&self) -> usize {
+        self.n_original
+    }
+    #[getter]
+    fn n_features_(&self) -> PyResult<usize> {
         if !self.is_fitted {
             return Err(PyValueError::new_err("Model has not been fitted"));
         }

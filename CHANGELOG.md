@@ -7,18 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-17
+
+No functional changes vs 0.2.0 — a housekeeping release (0.2.1 was tagged in
+error and yanked; see note below).
+
 ### Changed
 - Documented that in-browser install (`micropip.install("rfgboost")`) requires
   Pyodide/JupyterLite **>= 0.29**. The wasm wheel is tagged
   `pyemscripten_2025_0_wasm32` (the only wasm tag PyPI accepts); older Pyodide
-  (0.28.x) predates that tag in micropip and can't resolve it. No package change.
-- Dev tooling: added `.pre-commit-config.yaml` mirroring the CI lint/type-check
-  gates.
+  (0.28.x) predates that tag in micropip and can't resolve it.
+- Applied `rustfmt` across `src/` and cleared `clippy` (`-D warnings`); no
+  behavior change (all tests pass).
+
+### Added
+- Dev tooling / CI: `.pre-commit-config.yaml` and a `rust-lint` CI job gating
+  `ruff check`, `ruff format --check`, `mypy`, `cargo fmt --check`, and
+  `cargo clippy -D warnings`.
 
 <!--
-0.2.1 was tagged in error (a mistaken "wheel-tag fix" that PyPI could not
-publish) and yanked; it has no functional difference from 0.2.0. See the
-Unreleased "Changed" note above for the real story. Next release is 0.2.2.
+0.2.1 was tagged in error (a mistaken wasm "wheel-tag fix" that PyPI could not
+publish — PyPI accepts only `pyemscripten_<major>_<minor>_wasm32`) and yanked.
+It had no functional difference from 0.2.0.
 -->
 
 ## [0.2.0] - 2026-07-15

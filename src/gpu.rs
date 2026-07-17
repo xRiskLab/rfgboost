@@ -143,7 +143,11 @@ impl GpuForest {
     /// Boosting helper: out_dim=1, each tree's leaf values scaled by `weights[t]`,
     /// then the standard mean kernel — folds per-round learning-rate / tree-count
     /// factors into one forest (the caller adds the bias afterward).
-    pub fn new_scaled(trees: &[&TreeNode], n_features: usize, weights: &[f32]) -> Option<GpuForest> {
+    pub fn new_scaled(
+        trees: &[&TreeNode],
+        n_features: usize,
+        weights: &[f32],
+    ) -> Option<GpuForest> {
         let mut flat = Flat::default();
         for (t, &w) in trees.iter().zip(weights) {
             let leaf = move |node: &TreeNode, out: &mut [f32]| out[0] = (node.value as f32) * w;
@@ -160,12 +164,10 @@ impl GpuForest {
             ..Default::default()
         }))
         .ok()?;
-        let (device, queue) = pollster::block_on(
-            adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("rfgboost-gpu"),
-                ..Default::default()
-            }),
-        )
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("rfgboost-gpu"),
+            ..Default::default()
+        }))
         .ok()?;
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -212,11 +214,13 @@ impl GpuForest {
     /// Mean over trees of the leaf vector, per row. `x` is row-major f32 of shape
     /// `n_rows x n_features`; returns `n_rows * out_dim` f32 (row-major).
     pub fn predict(&self, x: &[f32], n_rows: usize) -> Vec<f32> {
-        let b_x = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("x"),
-            contents: bytemuck::cast_slice(x),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+        let b_x = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("x"),
+                contents: bytemuck::cast_slice(x),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
         let out_len = n_rows * self.out_dim as usize;
         let out_size = (out_len * 4) as u64;
         let b_out = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -237,26 +241,55 @@ impl GpuForest {
             n_trees: self.n_trees,
             out_dim: self.out_dim,
         };
-        let b_params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("params"),
-            contents: bytemuck::bytes_of(&params),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let b_params = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("params"),
+                contents: bytemuck::bytes_of(&params),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
 
         let bgl = self.pipeline.get_bind_group_layout(0);
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: b_x.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: self.b_feature.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: self.b_threshold.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: self.b_left.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: self.b_right.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: self.b_values.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: self.b_roots.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 7, resource: b_out.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 8, resource: b_params.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: b_x.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.b_feature.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.b_threshold.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.b_left.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.b_right.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.b_values.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: self.b_roots.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: b_out.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: b_params.as_entire_binding(),
+                },
             ],
         });
 
@@ -278,7 +311,9 @@ impl GpuForest {
         let slice = staging.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
-        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
         rx.recv().unwrap().unwrap();
         let data = slice.get_mapped_range();
         let out: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
@@ -382,9 +417,21 @@ struct ShapParams {
 /// SHAP values (row-major). `None` if `k > SHAP_MAX_K` or no adapter.
 #[allow(clippy::too_many_arguments)]
 pub fn shap_explain(
-    x: &[f32], n_samples: usize, n_features: usize, n_classes: usize, k: usize,
-    feat: &[i32], thr: &[f32], left: &[u32], right: &[u32], pl: &[f32], pr: &[f32],
-    uidx: &[i32], leafval: &[f32], ufeat: &[u32], fact: &[f32],
+    x: &[f32],
+    n_samples: usize,
+    n_features: usize,
+    n_classes: usize,
+    k: usize,
+    feat: &[i32],
+    thr: &[f32],
+    left: &[u32],
+    right: &[u32],
+    pl: &[f32],
+    pr: &[f32],
+    uidx: &[i32],
+    leafval: &[f32],
+    ufeat: &[u32],
+    fact: &[f32],
 ) -> Option<Vec<f32>> {
     if k > SHAP_MAX_K || (SHAP_MAX_DEPTH as usize) < 1 {
         return None;
@@ -465,15 +512,31 @@ pub fn shap_explain(
     let mut entries: Vec<wgpu::BindGroupEntry> = b
         .iter()
         .enumerate()
-        .map(|(i, buf)| wgpu::BindGroupEntry { binding: i as u32, resource: buf.as_entire_binding() })
+        .map(|(i, buf)| wgpu::BindGroupEntry {
+            binding: i as u32,
+            resource: buf.as_entire_binding(),
+        })
         .collect();
-    entries.push(wgpu::BindGroupEntry { binding: 11, resource: b_out.as_entire_binding() });
-    entries.push(wgpu::BindGroupEntry { binding: 12, resource: b_params.as_entire_binding() });
-    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &bgl, entries: &entries });
+    entries.push(wgpu::BindGroupEntry {
+        binding: 11,
+        resource: b_out.as_entire_binding(),
+    });
+    entries.push(wgpu::BindGroupEntry {
+        binding: 12,
+        resource: b_params.as_entire_binding(),
+    });
+    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &bgl,
+        entries: &entries,
+    });
 
     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     {
-        let mut cpass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+        let mut cpass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: None,
+            timestamp_writes: None,
+        });
         cpass.set_pipeline(&pipeline);
         cpass.set_bind_group(0, &bg, &[]);
         cpass.dispatch_workgroups(((n_samples + 63) / 64) as u32, 1, 1);
@@ -499,10 +562,26 @@ mod tests {
     use crate::tree::traverse;
 
     fn leaf(v: f64) -> TreeNode {
-        TreeNode { feature: 0, threshold: 0.0, left: None, right: None, value: v, samples: 1, class_counts: None }
+        TreeNode {
+            feature: 0,
+            threshold: 0.0,
+            left: None,
+            right: None,
+            value: v,
+            samples: 1,
+            class_counts: None,
+        }
     }
     fn node(feature: usize, threshold: f64, l: TreeNode, r: TreeNode) -> TreeNode {
-        TreeNode { feature, threshold, left: Some(Box::new(l)), right: Some(Box::new(r)), value: 0.0, samples: 1, class_counts: None }
+        TreeNode {
+            feature,
+            threshold,
+            left: Some(Box::new(l)),
+            right: Some(Box::new(r)),
+            value: 0.0,
+            samples: 1,
+            class_counts: None,
+        }
     }
 
     // Needs a GPU adapter; run locally: `cargo test --features gpu -- --ignored`
@@ -514,13 +593,22 @@ mod tests {
             node(1, -0.2, leaf(-1.0), node(0, 1.0, leaf(0.5), leaf(4.0))),
             node(0, 1.5, leaf(0.0), leaf(7.0)),
         ];
-        let rows: Vec<[f64; 2]> = vec![[-1.0, 0.1], [0.3, 0.9], [2.0, -0.5], [0.0, 0.0], [1.7, 1.0]];
-        let xf: Vec<f32> = rows.iter().flat_map(|r| r.iter().map(|&v| v as f32)).collect();
-        let g = GpuForest::new(&trees, 2, 1, |n, out| out[0] = n.value as f32).expect("no GPU adapter");
+        let rows: Vec<[f64; 2]> =
+            vec![[-1.0, 0.1], [0.3, 0.9], [2.0, -0.5], [0.0, 0.0], [1.7, 1.0]];
+        let xf: Vec<f32> = rows
+            .iter()
+            .flat_map(|r| r.iter().map(|&v| v as f32))
+            .collect();
+        let g =
+            GpuForest::new(&trees, 2, 1, |n, out| out[0] = n.value as f32).expect("no GPU adapter");
         let gpu = g.predict(&xf, rows.len());
         for (i, r) in rows.iter().enumerate() {
             let cpu = trees.iter().map(|t| traverse(t, r)).sum::<f64>() / trees.len() as f64;
-            assert!((cpu as f32 - gpu[i]).abs() < 1e-5, "row {i}: cpu={cpu} gpu={}", gpu[i]);
+            assert!(
+                (cpu as f32 - gpu[i]).abs() < 1e-5,
+                "row {i}: cpu={cpu} gpu={}",
+                gpu[i]
+            );
         }
     }
 }

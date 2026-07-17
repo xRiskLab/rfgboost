@@ -121,7 +121,11 @@ impl CudaForest {
     /// Boosting helper: out_dim=1, each tree's leaf values scaled by `weights[t]`,
     /// then the standard mean kernel — folds per-round learning-rate / tree-count
     /// factors into one forest (the caller adds the bias afterward).
-    pub fn new_scaled(trees: &[&TreeNode], n_features: usize, weights: &[f32]) -> Option<CudaForest> {
+    pub fn new_scaled(
+        trees: &[&TreeNode],
+        n_features: usize,
+        weights: &[f32],
+    ) -> Option<CudaForest> {
         let mut flat = Flat::default();
         for (t, &w) in trees.iter().zip(weights) {
             let leaf = move |node: &TreeNode, out: &mut [f32]| out[0] = (node.value as f32) * w;
@@ -250,16 +254,32 @@ extern "C" __global__ void shap(
 /// SHAP values (row-major). `None` if `k > SHAP_MAX_K` or CUDA unavailable.
 #[allow(clippy::too_many_arguments)]
 pub fn shap_explain(
-    x: &[f32], n_samples: usize, n_features: usize, n_classes: usize, k: usize,
-    feat: &[i32], thr: &[f32], left: &[u32], right: &[u32], pl: &[f32], pr: &[f32],
-    uidx: &[i32], leafval: &[f32], ufeat: &[u32], fact: &[f32],
+    x: &[f32],
+    n_samples: usize,
+    n_features: usize,
+    n_classes: usize,
+    k: usize,
+    feat: &[i32],
+    thr: &[f32],
+    left: &[u32],
+    right: &[u32],
+    pl: &[f32],
+    pr: &[f32],
+    uidx: &[i32],
+    leafval: &[f32],
+    ufeat: &[u32],
+    fact: &[f32],
 ) -> Option<Vec<f32>> {
     if k > SHAP_MAX_K {
         return None;
     }
     let ctx = CudaContext::new(0).ok()?;
     let stream = ctx.default_stream();
-    let func = ctx.load_module(compile_ptx(SHAP_KERNEL).ok()?).ok()?.load_function("shap").ok()?;
+    let func = ctx
+        .load_module(compile_ptx(SHAP_KERNEL).ok()?)
+        .ok()?
+        .load_function("shap")
+        .ok()?;
 
     let d_x = stream.memcpy_stod(x).ok()?;
     let d_feat = stream.memcpy_stod(feat).ok()?;
@@ -274,14 +294,34 @@ pub fn shap_explain(
     let d_fact = stream.memcpy_stod(fact).ok()?;
     let out_len = n_samples * n_classes * n_features;
     let mut d_out = stream.alloc_zeros::<f32>(out_len).ok()?;
-    let (ns, nf, nc, kk) = (n_samples as i32, n_features as i32, n_classes as i32, k as i32);
+    let (ns, nf, nc, kk) = (
+        n_samples as i32,
+        n_features as i32,
+        n_classes as i32,
+        k as i32,
+    );
 
     let cfg = LaunchConfig::for_num_elems(n_samples as u32);
     let mut b = stream.launch_builder(&func);
-    b.arg(&d_x).arg(&d_feat).arg(&d_thr).arg(&d_left).arg(&d_right).arg(&d_pl).arg(&d_pr)
-        .arg(&d_uidx).arg(&d_leaf).arg(&d_ufeat).arg(&d_fact)
-        .arg(&ns).arg(&nf).arg(&nc).arg(&kk).arg(&mut d_out);
-    unsafe { b.launch(cfg).ok()?; }
+    b.arg(&d_x)
+        .arg(&d_feat)
+        .arg(&d_thr)
+        .arg(&d_left)
+        .arg(&d_right)
+        .arg(&d_pl)
+        .arg(&d_pr)
+        .arg(&d_uidx)
+        .arg(&d_leaf)
+        .arg(&d_ufeat)
+        .arg(&d_fact)
+        .arg(&ns)
+        .arg(&nf)
+        .arg(&nc)
+        .arg(&kk)
+        .arg(&mut d_out);
+    unsafe {
+        b.launch(cfg).ok()?;
+    }
     stream.synchronize().ok()?;
     stream.memcpy_dtov(&d_out).ok()
 }

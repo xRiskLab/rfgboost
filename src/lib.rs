@@ -1,22 +1,22 @@
-mod histogram;
-mod par;
-mod tree;
-mod decision_tree;
-mod random_forest;
-mod tree_shap;
 mod boosting;
-mod unsupervised;
-#[cfg(feature = "gpu")]
-mod gpu;
 #[cfg(feature = "cuda")]
 mod cuda;
+mod decision_tree;
+#[cfg(feature = "gpu")]
+mod gpu;
+mod histogram;
+mod par;
+mod random_forest;
+mod tree;
+mod tree_shap;
+mod unsupervised;
 
 use pyo3::prelude::*;
 
+use boosting::{RFGBoost, RFGBoostClassifier, RFGBoostRegressor};
 use decision_tree::DecisionTree;
 use random_forest::{RandomForestClassifier, RandomForestRegressor};
 use tree_shap::TreeSHAP;
-use boosting::{RFGBoost, RFGBoostClassifier, RFGBoostRegressor};
 use unsupervised::RandomForestUnsupervised;
 
 #[pymodule]
