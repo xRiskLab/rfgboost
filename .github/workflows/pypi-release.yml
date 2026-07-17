@@ -182,28 +182,17 @@ jobs:
       # build-std + hidden visibility: emscripten 4.0.9 rejects Rust std's
       # mangled symbols in the side-module export table; recompiling std hidden
       # avoids it.
+      # pyodide-build emits the `pyemscripten_<major>_<minor>_wasm32` tag — this
+      # is CORRECT and must not be altered: it is the only wasm platform tag PyPI
+      # accepts (warehouse `_pyemscripten_platform_re`), and Pyodide/JupyterLite
+      # >= 0.29 resolves it via `micropip.install("rfgboost")`. (Do NOT re-tag to
+      # `pyodide_2025_0` or `emscripten_4_0_9` — PyPI rejects both. micropip
+      # failing in Pyodide 0.28.x is an environment-version issue, not a tag bug.)
       - name: Build wasm wheel
         run: |
           export RUSTFLAGS="$(pyodide config get rustflags) -Zdefault-visibility=hidden"
           export CARGO_UNSTABLE_BUILD_STD="std,panic_abort"
           pyodide build
-
-      # pyodide-build 0.35.1 tags the wheel `pyemscripten_2025_0_wasm32`, which
-      # nothing recognizes: PyPI rejects it on upload AND micropip's by-name
-      # resolver (`micropip.install("rfgboost")`) can't match it, failing with
-      # "Can't find a pure Python 3 wheel". Re-tag to the emscripten-version tag
-      # `emscripten_<ver>_wasm32` (e.g. emscripten_4_0_9_wasm32) — the only tag
-      # that is BOTH accepted by PyPI and present in micropip's sys_tags() set.
-      # (The Pyodide ABI tag `pyodide_2025_0_wasm32` is what Pyodide's *own*
-      # package index uses, but PyPI rejects it — don't use it for PyPI wheels.)
-      - name: Normalize wasm platform tag for PyPI + micropip
-        run: |
-          pip install wheel
-          emver="${{ steps.ver.outputs.emscripten }}"   # e.g. 4.0.9
-          tag="emscripten_${emver//./_}_wasm32"          # emscripten_4_0_9_wasm32
-          echo "Re-tagging wasm wheel -> $tag"
-          python -m wheel tags --remove --platform-tag "$tag" dist/*.whl
-          ls -la dist/
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
