@@ -12,9 +12,7 @@ pub use rayon::prelude::*;
 pub use rayon::{scope, ThreadPoolBuilder};
 
 #[cfg(target_os = "emscripten")]
-pub use seq::{
-    scope, IntoParallelIterator, IntoParallelRefIterator, ThreadPoolBuilder,
-};
+pub use seq::{scope, IntoParallelIterator, IntoParallelRefIterator, ThreadPoolBuilder};
 
 #[cfg(target_os = "emscripten")]
 mod seq {

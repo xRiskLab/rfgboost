@@ -92,7 +92,15 @@ impl DecisionTree {
         let y_slice = y_arr.as_slice().unwrap();
         let indices: Vec<usize> = (0..n_samples).collect();
         let mut rng = crate::tree::seed_rng(self.random_state);
-        self.root = Some(build_node_exact(&x_arr.view(), y_slice, &weights, &indices, 0, &config, &mut rng));
+        self.root = Some(build_node_exact(
+            &x_arr.view(),
+            y_slice,
+            &weights,
+            &indices,
+            0,
+            &config,
+            &mut rng,
+        ));
         self.is_fitted = true;
         Ok(())
     }
@@ -127,7 +135,10 @@ impl DecisionTree {
             .outer_iter()
             .map(|row| {
                 let raw = traverse_proba(root, row.as_slice().unwrap(), n_classes);
-                classes.iter().map(|&c| if c < raw.len() { raw[c] } else { 0.0 }).collect()
+                classes
+                    .iter()
+                    .map(|&c| if c < raw.len() { raw[c] } else { 0.0 })
+                    .collect()
             })
             .collect())
     }

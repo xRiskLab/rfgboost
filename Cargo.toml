@@ -1,6 +1,6 @@
 [package]
 name = "rfgboost"
-version = "0.2.0"
+version = "0.2.2"
 edition = "2021"
 
 [lib]
@@ -31,3 +31,20 @@ cudarc = { version = "0.19", optional = true, default-features = false, features
 [features]
 gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
 cuda = ["dep:cudarc"]
+
+[lints.rust]
+# pyo3 0.22 with the `gil-refs` compat feature: PyDict::new / PyList::empty /
+# GIL-ref args are deprecated in favor of the *_bound / Bound<'_, T> API. That
+# migration (and dropping `gil-refs`) is tracked separately; silence until then.
+deprecated = "allow"
+
+[lints.clippy]
+# False positives at the pyo3 `#[pymethods]` boundary: `?` on a PyResult helper
+# is reported as an identity PyErr conversion that cannot actually be removed.
+useless_conversion = "allow"
+# The RF / boosting builders intentionally take many hyperparameters positionally
+# to mirror the Python signatures; splitting them into structs adds no clarity.
+too_many_arguments = "allow"
+# Proximity/eigen matrix math indexes 2D vecs by (i, j); explicit range loops are
+# clearer here than iterator/enumerate gymnastics.
+needless_range_loop = "allow"

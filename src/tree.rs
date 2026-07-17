@@ -48,7 +48,8 @@ pub fn validate_weights(w: &[f64], n: usize) -> Result<(), String> {
     if w.len() != n {
         return Err(format!(
             "sample_weight length ({}) does not match number of samples ({})",
-            w.len(), n
+            w.len(),
+            n
         ));
     }
     for (i, &v) in w.iter().enumerate() {
@@ -149,7 +150,16 @@ pub fn build_tree_on_bootstrap(
     };
 
     let indices: Vec<usize> = (0..n_boot).collect();
-    build_node(&x_boot.view(), &y_boot, &w_boot, &indices, 0, config, rng, &boot_hist)
+    build_node(
+        &x_boot.view(),
+        &y_boot,
+        &w_boot,
+        &indices,
+        0,
+        config,
+        rng,
+        &boot_hist,
+    )
 }
 
 pub fn build_tree_on_bootstrap_exact(
@@ -197,7 +207,8 @@ pub fn build_node(
         return create_leaf(y, w, indices, config);
     }
 
-    let (best_feat, best_thresh, best_gain) = find_best_split_hist(x, y, w, indices, config, rng, hist);
+    let (best_feat, best_thresh, best_gain) =
+        find_best_split_hist(x, y, w, indices, config, rng, hist);
     if best_gain <= 0.0 {
         return create_leaf(y, w, indices, config);
     }
@@ -218,8 +229,26 @@ pub fn build_node(
     TreeNode {
         feature: best_feat,
         threshold: best_thresh,
-        left: Some(Box::new(build_node(x, y, w, &left_idx, depth + 1, config, rng, hist))),
-        right: Some(Box::new(build_node(x, y, w, &right_idx, depth + 1, config, rng, hist))),
+        left: Some(Box::new(build_node(
+            x,
+            y,
+            w,
+            &left_idx,
+            depth + 1,
+            config,
+            rng,
+            hist,
+        ))),
+        right: Some(Box::new(build_node(
+            x,
+            y,
+            w,
+            &right_idx,
+            depth + 1,
+            config,
+            rng,
+            hist,
+        ))),
         value: 0.0,
         samples: n,
         class_counts: None,
@@ -265,8 +294,24 @@ pub fn build_node_exact(
     TreeNode {
         feature: best_feat,
         threshold: best_thresh,
-        left: Some(Box::new(build_node_exact(x, y, w, &left_idx, depth + 1, config, rng))),
-        right: Some(Box::new(build_node_exact(x, y, w, &right_idx, depth + 1, config, rng))),
+        left: Some(Box::new(build_node_exact(
+            x,
+            y,
+            w,
+            &left_idx,
+            depth + 1,
+            config,
+            rng,
+        ))),
+        right: Some(Box::new(build_node_exact(
+            x,
+            y,
+            w,
+            &right_idx,
+            depth + 1,
+            config,
+            rng,
+        ))),
         value: 0.0,
         samples: n,
         class_counts: None,
@@ -355,11 +400,16 @@ fn find_best_split_hist(
             *total_counts.entry(y[i] as usize).or_insert(0.0) += w[i];
         }
         let parent_impurity = 1.0
-            - total_counts.values().map(|&c| (c / total_w).powi(2)).sum::<f64>();
+            - total_counts
+                .values()
+                .map(|&c| (c / total_w).powi(2))
+                .sum::<f64>();
 
         for &feat in &features_to_try {
             let nb = hist.n_bins[feat];
-            if nb <= 1 { continue; }
+            if nb <= 1 {
+                continue;
+            }
 
             let mut bin_counts: Vec<HashMap<usize, f64>> = vec![HashMap::new(); nb];
             let mut bin_totals = vec![0.0_f64; nb];
@@ -393,7 +443,10 @@ fn find_best_split_hist(
                 }
 
                 let left_gini = 1.0
-                    - left_counts.values().map(|&c| (c / left_w).powi(2)).sum::<f64>();
+                    - left_counts
+                        .values()
+                        .map(|&c| (c / left_w).powi(2))
+                        .sum::<f64>();
                 let right_gini = {
                     let mut rg = 1.0;
                     for (&cls, &tc) in &total_counts {
@@ -420,7 +473,9 @@ fn find_best_split_hist(
 
         for &feat in &features_to_try {
             let nb = hist.n_bins[feat];
-            if nb <= 1 { continue; }
+            if nb <= 1 {
+                continue;
+            }
 
             let mut bin_wy = vec![0.0; nb];
             let mut bin_wyy = vec![0.0; nb];
@@ -493,7 +548,9 @@ fn find_best_split_exact(
         let mut feats: Vec<usize> = (0..n_features).collect();
         feats.shuffle(rng);
         match config.max_features {
-            Some(mf) if mf < n_features => { feats.truncate(mf); }
+            Some(mf) if mf < n_features => {
+                feats.truncate(mf);
+            }
             _ => {}
         }
         feats
@@ -505,7 +562,10 @@ fn find_best_split_exact(
             *total_counts.entry(y[i] as usize).or_insert(0.0) += w[i];
         }
         let parent_impurity = 1.0
-            - total_counts.values().map(|&c| (c / total_w).powi(2)).sum::<f64>();
+            - total_counts
+                .values()
+                .map(|&c| (c / total_w).powi(2))
+                .sum::<f64>();
 
         for &feat in &features_to_try {
             let mut sorted: Vec<usize> = indices.to_vec();
@@ -538,9 +598,15 @@ fn find_best_split_exact(
                 }
 
                 let left_gini = 1.0
-                    - left_counts.values().map(|&c| (c / left_w).powi(2)).sum::<f64>();
+                    - left_counts
+                        .values()
+                        .map(|&c| (c / left_w).powi(2))
+                        .sum::<f64>();
                 let right_gini = 1.0
-                    - right_counts.values().map(|&c| (c / right_w).powi(2)).sum::<f64>();
+                    - right_counts
+                        .values()
+                        .map(|&c| (c / right_w).powi(2))
+                        .sum::<f64>();
                 let weighted = (left_w * left_gini + right_w * right_gini) / total_w;
                 let gain = parent_impurity - weighted;
 
@@ -611,9 +677,8 @@ pub fn traverse(node: &TreeNode, sample: &[f64]) -> f64 {
             (None, None) => return cur.value,
             (Some(left), _) if sample[cur.feature] <= cur.threshold => cur = left,
             (_, Some(right)) => cur = right,
-            // Edge case: only one child exists
+            // Edge case: only a left child exists (right-child case is covered above)
             (Some(left), None) => cur = left,
-            (None, Some(right)) => cur = right,
         }
     }
 }

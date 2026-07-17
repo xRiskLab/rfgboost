@@ -39,7 +39,9 @@ impl TreeSHAP {
                         let total: f64 = counts.values().sum();
                         if total > 0.0 {
                             for (&cls, &cnt) in counts {
-                                if cls < self.n_classes { probs[cls] = cnt / total; }
+                                if cls < self.n_classes {
+                                    probs[cls] = cnt / total;
+                                }
                             }
                         }
                     }
@@ -47,16 +49,34 @@ impl TreeSHAP {
                 } else {
                     vec![n.value]
                 };
-                SHAPNode { is_leaf: true, feature: 0, threshold: 0.0, value, samples: n.samples, left_samples: 0, right_samples: 0, left: None, right: None }
+                SHAPNode {
+                    is_leaf: true,
+                    feature: 0,
+                    threshold: 0.0,
+                    value,
+                    samples: n.samples,
+                    left_samples: 0,
+                    right_samples: 0,
+                    left: None,
+                    right: None,
+                }
             } else {
                 let (mut li, mut ri) = (Vec::new(), Vec::new());
                 for &i in indices {
-                    if self.x_train[[i, n.feature]] <= n.threshold { li.push(i); } else { ri.push(i); }
+                    if self.x_train[[i, n.feature]] <= n.threshold {
+                        li.push(i);
+                    } else {
+                        ri.push(i);
+                    }
                 }
                 SHAPNode {
-                    is_leaf: false, feature: n.feature, threshold: n.threshold,
-                    value: vec![0.0; self.n_classes.max(1)], samples: n.samples,
-                    left_samples: li.len(), right_samples: ri.len(),
+                    is_leaf: false,
+                    feature: n.feature,
+                    threshold: n.threshold,
+                    value: vec![0.0; self.n_classes.max(1)],
+                    samples: n.samples,
+                    left_samples: li.len(),
+                    right_samples: ri.len(),
                     left: self.build_shap_tree(n.left.as_deref(), &li),
                     right: self.build_shap_tree(n.right.as_deref(), &ri),
                 }
@@ -64,41 +84,92 @@ impl TreeSHAP {
         })
     }
 
-    fn evaluate_coalition(&self, x: &[f64], revealed: u64, unique_feats: &[usize], node: &SHAPNode, class_index: usize) -> f64 {
+    fn evaluate_coalition(
+        &self,
+        x: &[f64],
+        revealed: u64,
+        unique_feats: &[usize],
+        node: &SHAPNode,
+        class_index: usize,
+    ) -> f64 {
         if node.is_leaf {
             return node.value[class_index.min(node.value.len() - 1)];
         }
-        let feat_revealed = unique_feats.iter().enumerate().any(|(j, &f)| f == node.feature && (revealed >> j) & 1 == 1);
+        let feat_revealed = unique_feats
+            .iter()
+            .enumerate()
+            .any(|(j, &f)| f == node.feature && (revealed >> j) & 1 == 1);
         if feat_revealed {
-            let child = if x[node.feature] <= node.threshold { node.left.as_deref().unwrap() } else { node.right.as_deref().unwrap() };
+            let child = if x[node.feature] <= node.threshold {
+                node.left.as_deref().unwrap()
+            } else {
+                node.right.as_deref().unwrap()
+            };
             self.evaluate_coalition(x, revealed, unique_feats, child, class_index)
         } else {
             let n = node.samples as f64;
-            let p_left = if n > 0.0 { node.left_samples as f64 / n } else { 0.5 };
-            let p_right = if n > 0.0 { node.right_samples as f64 / n } else { 0.5 };
-            p_left * self.evaluate_coalition(x, revealed, unique_feats, node.left.as_deref().unwrap(), class_index)
-            + p_right * self.evaluate_coalition(x, revealed, unique_feats, node.right.as_deref().unwrap(), class_index)
+            let p_left = if n > 0.0 {
+                node.left_samples as f64 / n
+            } else {
+                0.5
+            };
+            let p_right = if n > 0.0 {
+                node.right_samples as f64 / n
+            } else {
+                0.5
+            };
+            p_left
+                * self.evaluate_coalition(
+                    x,
+                    revealed,
+                    unique_feats,
+                    node.left.as_deref().unwrap(),
+                    class_index,
+                )
+                + p_right
+                    * self.evaluate_coalition(
+                        x,
+                        revealed,
+                        unique_feats,
+                        node.right.as_deref().unwrap(),
+                        class_index,
+                    )
         }
     }
 
     fn collect_tree_features(node: &SHAPNode, feats: &mut Vec<usize>) {
-        if node.is_leaf { return; }
-        if !feats.contains(&node.feature) { feats.push(node.feature); }
-        if let Some(left) = node.left.as_deref() { Self::collect_tree_features(left, feats); }
-        if let Some(right) = node.right.as_deref() { Self::collect_tree_features(right, feats); }
+        if node.is_leaf {
+            return;
+        }
+        if !feats.contains(&node.feature) {
+            feats.push(node.feature);
+        }
+        if let Some(left) = node.left.as_deref() {
+            Self::collect_tree_features(left, feats);
+        }
+        if let Some(right) = node.right.as_deref() {
+            Self::collect_tree_features(right, feats);
+        }
     }
 
     fn explain_single_class(&self, x: &[f64], class_index: usize) -> Vec<f64> {
         let mut phi = vec![0.0; self.n_features];
-        let root = match self.root.as_deref() { Some(r) => r, None => return phi };
+        let root = match self.root.as_deref() {
+            Some(r) => r,
+            None => return phi,
+        };
 
         let mut unique_feats: Vec<usize> = Vec::new();
         Self::collect_tree_features(root, &mut unique_feats);
         let k = unique_feats.len();
-        if k == 0 { return phi; }
+        if k == 0 {
+            return phi;
+        }
 
         let mut fact = vec![1.0_f64; k + 1];
-        for i in 1..=k { fact[i] = fact[i - 1] * i as f64; }
+        for i in 1..=k {
+            fact[i] = fact[i - 1] * i as f64;
+        }
 
         let n_coalitions = 1u64 << k;
         let mut f_s = vec![0.0; n_coalitions as usize];
@@ -109,9 +180,15 @@ impl TreeSHAP {
         for (j, &feat) in unique_feats.iter().enumerate() {
             let mut contrib = 0.0;
             for mask in 0..n_coalitions {
-                if (mask >> j) & 1 == 1 { continue; }
+                if (mask >> j) & 1 == 1 {
+                    continue;
+                }
                 let s_size = (mask as u32).count_ones() as usize;
-                let w = if k <= 1 { 1.0 } else { fact[s_size] * fact[k - s_size - 1] / fact[k] };
+                let w = if k <= 1 {
+                    1.0
+                } else {
+                    fact[s_size] * fact[k - s_size - 1] / fact[k]
+                };
                 contrib += w * (f_s[(mask | (1 << j)) as usize] - f_s[mask as usize]);
             }
             phi[feat] += contrib;
@@ -125,15 +202,28 @@ impl TreeSHAP {
     #[new]
     fn new(tree: DecisionTree, x_train: PyReadonlyArray2<f64>, model_type: &str) -> PyResult<Self> {
         if !tree.is_fitted {
-            return Err(PyValueError::new_err("Tree must be fitted before creating TreeSHAP"));
+            return Err(PyValueError::new_err(
+                "Tree must be fitted before creating TreeSHAP",
+            ));
         }
         let x_arr = x_train.as_array();
         let n_features = x_arr.ncols();
         let n_samples = x_arr.nrows();
-        let n_classes = if model_type == "classification" { tree.classes_.as_ref().map_or(2, |c| c.len()) } else { 1 };
+        let n_classes = if model_type == "classification" {
+            tree.classes_.as_ref().map_or(2, |c| c.len())
+        } else {
+            1
+        };
         let indices: Vec<usize> = (0..n_samples).collect();
 
-        let mut shap = Self { tree, x_train: x_arr.to_owned(), model_type: model_type.to_string(), n_features, n_classes, root: None };
+        let mut shap = Self {
+            tree,
+            x_train: x_arr.to_owned(),
+            model_type: model_type.to_string(),
+            n_features,
+            n_classes,
+            root: None,
+        };
         shap.root = shap.build_shap_tree(shap.tree.root.as_ref(), &indices);
         Ok(shap)
     }
@@ -151,28 +241,39 @@ impl TreeSHAP {
             #[cfg(feature = "gpu")]
             "mps" | "metal" | "gpu" => self.explain_device(&x_arr, Backend::Wgpu),
             other => Err(PyValueError::new_err(format!(
-                "device '{}' is not available in this build. Available: {}.", other, shap_devices()))),
+                "device '{}' is not available in this build. Available: {}.",
+                other,
+                shap_devices()
+            ))),
         }
     }
 }
 
 fn shap_devices() -> String {
     #[allow(unused_mut)]
-    let mut d = vec!["cpu"];
-    #[cfg(feature = "cuda")] d.push("cuda");
-    #[cfg(feature = "gpu")] d.push("mps");
+    let mut d = ["cpu"];
+    #[cfg(feature = "cuda")]
+    d.push("cuda");
+    #[cfg(feature = "gpu")]
+    d.push("mps");
     d.join(", ")
 }
 
 impl TreeSHAP {
     fn explain_cpu(&self, x_arr: &ndarray::ArrayView2<f64>) -> Vec<Vec<Vec<f64>>> {
         let n_samples = x_arr.nrows();
-        let n_out = if self.model_type == "classification" { self.n_classes } else { 1 };
+        let n_out = if self.model_type == "classification" {
+            self.n_classes
+        } else {
+            1
+        };
         (0..n_samples)
             .map(|i| {
                 let row = x_arr.row(i);
                 let s = row.as_slice().unwrap();
-                (0..n_out).map(|c| self.explain_single_class(s, c)).collect()
+                (0..n_out)
+                    .map(|c| self.explain_single_class(s, c))
+                    .collect()
             })
             .collect()
     }
@@ -188,28 +289,51 @@ enum Backend {
 
 #[cfg(any(feature = "cuda", feature = "gpu"))]
 struct ShapFlat {
-    feat: Vec<i32>, thr: Vec<f32>, left: Vec<u32>, right: Vec<u32>,
-    pl: Vec<f32>, pr: Vec<f32>, uidx: Vec<i32>, leafval: Vec<f32>,
-    ufeat: Vec<u32>, fact: Vec<f32>, k: usize,
+    feat: Vec<i32>,
+    thr: Vec<f32>,
+    left: Vec<u32>,
+    right: Vec<u32>,
+    pl: Vec<f32>,
+    pr: Vec<f32>,
+    uidx: Vec<i32>,
+    leafval: Vec<f32>,
+    ufeat: Vec<u32>,
+    fact: Vec<f32>,
+    k: usize,
 }
 
 #[cfg(any(feature = "cuda", feature = "gpu"))]
 fn flatten_shap(node: &SHAPNode, a: &mut ShapFlat, ufeat: &[usize], nc: usize) -> u32 {
     let id = a.feat.len() as u32;
-    a.feat.push(0); a.thr.push(0.0); a.left.push(0); a.right.push(0);
-    a.pl.push(0.0); a.pr.push(0.0); a.uidx.push(-1);
+    a.feat.push(0);
+    a.thr.push(0.0);
+    a.left.push(0);
+    a.right.push(0);
+    a.pl.push(0.0);
+    a.pr.push(0.0);
+    a.uidx.push(-1);
     let base = a.leafval.len();
     a.leafval.resize(base + nc, 0.0);
     if node.is_leaf {
         a.feat[id as usize] = -1;
         let vlen = node.value.len();
-        for c in 0..nc { a.leafval[base + c] = node.value[c.min(vlen.saturating_sub(1))] as f32; }
+        for c in 0..nc {
+            a.leafval[base + c] = node.value[c.min(vlen.saturating_sub(1))] as f32;
+        }
     } else {
         a.feat[id as usize] = node.feature as i32;
         a.thr[id as usize] = node.threshold as f32;
         let n = node.samples as f32;
-        a.pl[id as usize] = if n > 0.0 { node.left_samples as f32 / n } else { 0.5 };
-        a.pr[id as usize] = if n > 0.0 { node.right_samples as f32 / n } else { 0.5 };
+        a.pl[id as usize] = if n > 0.0 {
+            node.left_samples as f32 / n
+        } else {
+            0.5
+        };
+        a.pr[id as usize] = if n > 0.0 {
+            node.right_samples as f32 / n
+        } else {
+            0.5
+        };
         a.uidx[id as usize] = ufeat.iter().position(|&f| f == node.feature).unwrap() as i32;
         let l = flatten_shap(node.left.as_deref().unwrap(), a, ufeat, nc);
         let r = flatten_shap(node.right.as_deref().unwrap(), a, ufeat, nc);
@@ -227,21 +351,39 @@ impl TreeSHAP {
         Self::collect_tree_features(root, &mut ufeat_us);
         let k = ufeat_us.len();
         let mut a = ShapFlat {
-            feat: vec![], thr: vec![], left: vec![], right: vec![], pl: vec![], pr: vec![],
-            uidx: vec![], leafval: vec![], ufeat: ufeat_us.iter().map(|&f| f as u32).collect(),
-            fact: vec![], k,
+            feat: vec![],
+            thr: vec![],
+            left: vec![],
+            right: vec![],
+            pl: vec![],
+            pr: vec![],
+            uidx: vec![],
+            leafval: vec![],
+            ufeat: ufeat_us.iter().map(|&f| f as u32).collect(),
+            fact: vec![],
+            k,
         };
         flatten_shap(root, &mut a, &ufeat_us, self.n_classes.max(1));
         let mut fact = vec![1.0f32; k + 1];
-        for i in 1..=k { fact[i] = fact[i - 1] * i as f32; }
+        for i in 1..=k {
+            fact[i] = fact[i - 1] * i as f32;
+        }
         a.fact = fact;
         Some(a)
     }
 
-    fn explain_device(&self, x_arr: &ndarray::ArrayView2<f64>, backend: Backend) -> PyResult<Vec<Vec<Vec<f64>>>> {
+    fn explain_device(
+        &self,
+        x_arr: &ndarray::ArrayView2<f64>,
+        backend: Backend,
+    ) -> PyResult<Vec<Vec<Vec<f64>>>> {
         let n = x_arr.nrows();
         let nf = self.n_features;
-        let nc = if self.model_type == "classification" { self.n_classes } else { 1 };
+        let nc = if self.model_type == "classification" {
+            self.n_classes
+        } else {
+            1
+        };
         let flat = match self.flatten_for_gpu() {
             Some(f) => f,
             None => return Ok(self.explain_cpu(x_arr)),
@@ -250,12 +392,40 @@ impl TreeSHAP {
         let out = match backend {
             #[cfg(feature = "cuda")]
             Backend::Cuda => crate::cuda::shap_explain(
-                &xf, n, nf, nc, flat.k, &flat.feat, &flat.thr, &flat.left, &flat.right,
-                &flat.pl, &flat.pr, &flat.uidx, &flat.leafval, &flat.ufeat, &flat.fact),
+                &xf,
+                n,
+                nf,
+                nc,
+                flat.k,
+                &flat.feat,
+                &flat.thr,
+                &flat.left,
+                &flat.right,
+                &flat.pl,
+                &flat.pr,
+                &flat.uidx,
+                &flat.leafval,
+                &flat.ufeat,
+                &flat.fact,
+            ),
             #[cfg(feature = "gpu")]
             Backend::Wgpu => crate::gpu::shap_explain(
-                &xf, n, nf, nc, flat.k, &flat.feat, &flat.thr, &flat.left, &flat.right,
-                &flat.pl, &flat.pr, &flat.uidx, &flat.leafval, &flat.ufeat, &flat.fact),
+                &xf,
+                n,
+                nf,
+                nc,
+                flat.k,
+                &flat.feat,
+                &flat.thr,
+                &flat.left,
+                &flat.right,
+                &flat.pl,
+                &flat.pr,
+                &flat.uidx,
+                &flat.leafval,
+                &flat.ufeat,
+                &flat.fact,
+            ),
         };
         // k too large for the GPU kernel, or no device -> CPU fallback.
         let out = match out {
