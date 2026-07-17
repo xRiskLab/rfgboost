@@ -7,10 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.1] - 2026-07-17
+### Changed
+- Documented that in-browser install (`micropip.install("rfgboost")`) requires
+  Pyodide/JupyterLite **>= 0.29**. The wasm wheel is tagged
+  `pyemscripten_2025_0_wasm32` (the only wasm tag PyPI accepts); older Pyodide
+  (0.28.x) predates that tag in micropip and can't resolve it. No package change.
+- Dev tooling: added `.pre-commit-config.yaml` mirroring the CI lint/type-check
+  gates.
 
-### Fixed
-- **WASM/Pyodide wheel install.** The Pyodide wheel was published with the platform tag `pyemscripten_2025_0_wasm32`, which neither Pyodide/JupyterLite (0.28.x) nor micropip recognizes, so `micropip.install("rfgboost")` failed with "Can't find a pure Python 3 wheel." The release now normalizes the tag to the canonical `pyodide_2025_0_wasm32` (matching Pyodide's own numpy/scikit-learn wheels). This is a packaging-only fix — no code or ABI change. (The bug was present in 0.1.2 and 0.2.0; the `fastwoe-rs` environment marker was never the cause.)
+<!--
+0.2.1 was tagged in error (a mistaken "wheel-tag fix" that PyPI could not
+publish) and yanked; it has no functional difference from 0.2.0. See the
+Unreleased "Changed" note above for the real story. Next release is 0.2.2.
+-->
 
 ## [0.2.0] - 2026-07-15
 

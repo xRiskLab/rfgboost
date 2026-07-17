@@ -15,6 +15,20 @@ pip install maturin
 maturin develop --release
 ```
 
+### In the browser (Pyodide / JupyterLite)
+
+```python
+import micropip
+await micropip.install("rfgboost")
+```
+
+Requires **Pyodide/JupyterLite ≥ 0.29**. rfgboost ships a WASM wheel tagged
+`pyemscripten_2025_0_wasm32` (the only wasm platform tag PyPI accepts); micropip
+gained support for that tag in Pyodide 0.29, so on older runtimes (0.28.x)
+`micropip.install("rfgboost")` fails with "Can't find a pure Python 3 wheel."
+The categorical/WOE path (`WoeEncoder`) is unavailable in-browser — `fastwoe-rs`
+has no WASM wheel — but the numeric `RFGBoost*` estimators work.
+
 ## Quick Start
 
 ```python
