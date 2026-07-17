@@ -170,6 +170,9 @@ class WoeEncoder(TransformerMixin, BaseEstimator):  # type: ignore[misc]
         if getattr(self, "woe_", None) is None:
             raise ValueError("WoeEncoder has no fitted WOE (no cat_features)")
         return _woe_bundle(
-            self.woe_, self.cat_features_, n_features,
-            multiclass=self.multiclass_, n_classes=self.n_classes_,
+            self.woe_,
+            self.cat_features_,
+            n_features,
+            multiclass=self.multiclass_,
+            n_classes=self.n_classes_,
         )

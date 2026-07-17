@@ -1,0 +1,29 @@
+# Mirrors the CI gates in .github/workflows/ci.yml (lint) and typecheck.yml.
+# Local/system hooks run through `uv run`, so ruff and mypy resolve to the exact
+# versions pinned in the project lockfile — no drift from CI.
+#
+# Setup:  uv run pre-commit install
+# Manual: uv run pre-commit run --all-files
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check rfgboost/ tests/
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: ruff-format
+        name: ruff format --check
+        entry: uv run ruff format --check rfgboost/ tests/
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: mypy
+        name: mypy
+        entry: uv run mypy rfgboost/
+        language: system
+        types: [python]
+        pass_filenames: false
