@@ -52,6 +52,7 @@ class RFGBoostClassifier(ClassifierMixin, BaseEstimator):  # type: ignore[misc]
         async_mode: bool = False,
         tol: float = 1e-4,
         n_jobs: Optional[int] = None,
+        monotone_constraints: Optional[dict] = None,
     ) -> None:
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
@@ -66,6 +67,10 @@ class RFGBoostClassifier(ClassifierMixin, BaseEstimator):  # type: ignore[misc]
         self.async_mode = async_mode
         self.tol = tol
         self.n_jobs = n_jobs
+        # {column_index: +1|-1|0} over the numeric feature matrix this estimator
+        # receives. WOE-encode categoricals upstream with WoeEncoder; constraints
+        # then key on the encoded column positions.
+        self.monotone_constraints = monotone_constraints
 
     def _build_rust_params(self) -> dict[str, Any]:
         return dict(
@@ -82,7 +87,29 @@ class RFGBoostClassifier(ClassifierMixin, BaseEstimator):  # type: ignore[misc]
             async_mode=self.async_mode,
             tol=self.tol,
             n_jobs=self.n_jobs,
+            monotone_constraints=getattr(self, "_monotone_encoded", None),
         )
+
+    def _monotone_vector(self, n_features: int) -> Optional[list[int]]:
+        """Build the per-column monotonicity vector the Rust core expects from
+        ``monotone_constraints={column_index: +1|-1|0}``.
+
+        Keys index the columns of the matrix passed to ``fit`` (already numeric).
+        Only the sign of each direction matters. Validated here at fit time,
+        where ``n_features`` is known, so ``__init__`` stays a verbatim param
+        store per the sklearn convention.
+        """
+        if not self.monotone_constraints:
+            return None
+        directions = [0] * n_features
+        for col, direction in self.monotone_constraints.items():
+            if not isinstance(col, (int, np.integer)) or not (0 <= int(col) < n_features):
+                raise ValueError(
+                    f"monotone_constraints key {col!r} is not a valid column index "
+                    f"in [0, {n_features})."
+                )
+            directions[int(col)] = 1 if direction > 0 else -1 if direction < 0 else 0
+        return directions
 
     def fit(
         self,
@@ -90,11 +117,13 @@ class RFGBoostClassifier(ClassifierMixin, BaseEstimator):  # type: ignore[misc]
         y: ArrayLike,
         sample_weight: Optional[ArrayLike] = None,
     ) -> RFGBoostClassifier:
+        X_arr = _f64(X)
         y_arr = _f64(y)
         sw = _f64(sample_weight) if sample_weight is not None else None
         self.classes_ = np.unique(y_arr)
+        self._monotone_encoded = self._monotone_vector(X_arr.shape[1])
         self._model = _RustClassifier(**self._build_rust_params())
-        self._model.fit(_f64(X), y_arr, sw)
+        self._model.fit(X_arr, y_arr, sw)
         return self
 
     def predict(self, X: ArrayLike, device: str = "cpu") -> NDArray[np.float64]:

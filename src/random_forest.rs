@@ -224,6 +224,7 @@ impl RandomForestRegressor {
             max_depth: self.max_depth, min_samples_split: self.min_samples_split,
             min_samples_leaf: self.min_samples_leaf, is_classification: false,
             max_features: if max_feat < n_features { Some(max_feat) } else { None },
+            monotone_constraints: Vec::new(),
         };
 
         let tree_params: Vec<(Vec<usize>, u64)> = (0..self.n_estimators)
@@ -434,6 +435,7 @@ impl RandomForestClassifier {
             max_depth: self.max_depth, min_samples_split: self.min_samples_split,
             min_samples_leaf: self.min_samples_leaf, is_classification: true,
             max_features: if max_feat < n_features { Some(max_feat) } else { None },
+            monotone_constraints: Vec::new(),
         };
 
         let tree_params: Vec<(Vec<usize>, u64)> = (0..self.n_estimators)
